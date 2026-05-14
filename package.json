@@ -1,0 +1,24 @@
+{
+  "name": "gemini-nosql-data-wrangler",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agentic voice-driven MongoDB Aggregation Pipeline builder powered by Gemini Multimodal Live and the MongoDB MCP Server.",
+  "workspaces": [
+    "ui",
+    "server"
+  ],
+  "scripts": {
+    "dev": "concurrently -n ui,server -c blue,magenta \"npm:dev:ui\" \"npm:dev:server\"",
+    "dev:ui": "npm run dev --workspace ui",
+    "dev:server": "npm run dev --workspace server",
+    "build": "npm run build:server && npm run build:ui",
+    "build:ui": "npm run build --workspace ui",
+    "build:server": "npm run build --workspace server",
+    "start": "concurrently -n ui,server -c blue,magenta \"npm:start:ui\" \"npm:start:server\"",
+    "start:ui": "npm run preview --workspace ui",
+    "start:server": "npm run start --workspace server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
