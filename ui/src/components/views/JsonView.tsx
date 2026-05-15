@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   Check,
   Copy,
@@ -6,25 +6,46 @@ import {
   Minus,
   Plus,
 } from "lucide-react";
-import type { PipelineSchema } from "@/Schema";
 
+/**
+ * Generic JSON viewer. Render any value as pretty-printed JSON with font size
+ * controls, copy-to-clipboard, and download. Header is fully customizable so
+ * the same component drives both Pipeline-Schema panels and per-document
+ * result panels.
+ */
 export interface JsonViewProps {
-  schema: PipelineSchema;
+  /** Anything JSON-serializable. Non-objects render as their JSON string too. */
+  data: unknown;
+  /** Headline shown on the left side of the toolbar. */
+  title?: string;
+  /** Optional inline metadata (e.g. "3 stages · 0 datasets") next to the title. */
+  info?: React.ReactNode;
+  /** Filename (sans extension) suggested when the user clicks Download. */
+  downloadName?: string;
+  /** Empty-state message when `data` is null / undefined / []. */
+  emptyHint?: string;
 }
 
 const JSON_FONT_MIN_PX = 9;
 const JSON_FONT_MAX_PX = 22;
 const JSON_FONT_DEFAULT_PX = 12;
 
-export function JsonView({ schema }: JsonViewProps) {
-  const json = JSON.stringify(schema, null, 2);
+export function JsonView({
+  data,
+  title,
+  info,
+  downloadName = "data",
+  emptyHint,
+}: JsonViewProps) {
+  const json = useMemo(() => stringifyForDisplay(data), [data]);
+  const isEmpty = data == null || (Array.isArray(data) && data.length === 0);
+
   const [copied, setCopied] = useState(false);
   const [fontSizePx, setFontSizePx] = useState(JSON_FONT_DEFAULT_PX);
 
   const zoomOut = useCallback(() => {
     setFontSizePx((s) => Math.max(JSON_FONT_MIN_PX, s - 1));
   }, []);
-
   const zoomIn = useCallback(() => {
     setFontSizePx((s) => Math.min(JSON_FONT_MAX_PX, s + 1));
   }, []);
@@ -44,7 +65,7 @@ export function JsonView({ schema }: JsonViewProps) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${schema.pipeline.name || "pipeline"}-schema.json`;
+    a.download = `${downloadName || "data"}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -52,16 +73,18 @@ export function JsonView({ schema }: JsonViewProps) {
   };
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-h-0 min-w-0 flex-col">
       <header className="flex items-center justify-between gap-2 border-b border-gray-200 bg-gray-50 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2 text-xs text-gray-600">
-          <span className="font-mono text-gray-900">
-            {schema.pipeline.name}
-          </span>
-          <span>·</span>
-          <span>{schema.stages.length} stages</span>
-          <span>·</span>
-          <span>{Object.keys(schema.datasets).length} datasets</span>
+          {title && (
+            <span className="truncate font-mono text-gray-900">{title}</span>
+          )}
+          {info && (
+            <>
+              {title && <span>·</span>}
+              <span className="truncate">{info}</span>
+            </>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <div className="mr-1 flex items-center gap-0.5 rounded border border-gray-300 bg-white px-0.5 shadow-sm">
@@ -104,14 +127,29 @@ export function JsonView({ schema }: JsonViewProps) {
           </ToolbarButton>
         </div>
       </header>
-      <pre
-        className="flex-1 overflow-auto bg-gray-950 p-4 font-mono leading-relaxed text-gray-100"
-        style={{ fontSize: `${fontSizePx}px` }}
-      >
-        <code>{json}</code>
-      </pre>
+      {isEmpty ? (
+        <div className="flex flex-1 items-center justify-center bg-gray-950 text-xs italic text-gray-500">
+          {emptyHint ?? "No data."}
+        </div>
+      ) : (
+        <pre
+          className="flex-1 overflow-auto bg-gray-950 p-4 font-mono leading-relaxed text-gray-100"
+          style={{ fontSize: `${fontSizePx}px` }}
+        >
+          <code>{json}</code>
+        </pre>
+      )}
     </div>
   );
+}
+
+function stringifyForDisplay(data: unknown): string {
+  if (data === undefined) return "undefined";
+  try {
+    return JSON.stringify(data, null, 2);
+  } catch {
+    return String(data);
+  }
 }
 
 interface ToolbarButtonProps {

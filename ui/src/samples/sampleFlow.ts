@@ -1,13 +1,65 @@
 import type { PipelineSchema } from "@/Schema";
 
 /**
- * A canned pipeline that demonstrates the signature feature of the demo:
- * a MongoDB `$vectorSearch` against `sample_mflix.embedded_movies`. Loaded
- * onto the read-only canvas at startup when the "Sample Flow" toggle is on,
- * so the user has something visual to see before they talk to the agent.
+ * Demo starting flow — two MQL_SOURCE stages (movies + comments) sitting side
+ * by side. The rest of the pipeline (lookup, filter, group) is added by the
+ * agent as the presenter talks to Gemini, so the audience watches the canvas
+ * grow live.
  *
- * The agent is free to mutate or replace this flow via the `update_canvas`
- * tool — it's intentionally a starting point, not a fixed pipeline.
+ * Equivalent in spirit to the SQL-demo flow used by sibling projects
+ * (load 2 tables → join → filter → group), but with NoSQL semantics:
+ *   $lookup (join), $match (filter), $group (aggregate).
+ */
+export const SAMPLE_MFLIX_DEMO_FLOW: PipelineSchema = {
+  version: "1.0",
+  pipeline: {
+    name: "mflix_demo",
+    createdAt: "2026-05-14T00:00:00.000Z",
+    description:
+      "Demo starting flow — sample_mflix.embedded_movies + sample_mflix.comments. Build the rest by talking to Gemini.",
+  },
+  datasets: {},
+  stages: [
+    {
+      id: "stage_1",
+      name: "movies_source",
+      type: "MQL_SOURCE",
+      depends_on: [],
+      inputs: ["sample_mflix.embedded_movies"],
+      output: "embedded_movies",
+      operation: {
+        stageType: "MQL_SOURCE",
+        database: "sample_mflix",
+        collection: "embedded_movies",
+      },
+    },
+    {
+      id: "stage_2",
+      name: "comments_source",
+      type: "MQL_SOURCE",
+      depends_on: [],
+      inputs: ["sample_mflix.comments"],
+      output: "comments",
+      operation: {
+        stageType: "MQL_SOURCE",
+        database: "sample_mflix",
+        collection: "comments",
+      },
+    },
+  ],
+  layout: {
+    nodes: [
+      { id: "stage_1", position: { x: 80, y: 80 } },
+      { id: "stage_2", position: { x: 380, y: 80 } },
+    ],
+    edges: [],
+  },
+};
+
+/**
+ * Pre-built `$vectorSearch` pipeline — useful when demoing MongoDB's
+ * semantic-search feature directly, without having the agent build it. Three
+ * stages: load embedded_movies → vector-search → project the readable fields.
  */
 export const SAMPLE_MFLIX_VECTOR_FLOW: PipelineSchema = {
   version: "1.0",

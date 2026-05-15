@@ -4,6 +4,7 @@ import { WebSocketServer, type WebSocket as WsWebSocket } from "ws";
 
 import { loadEnv } from "./config/env.js";
 import { MongoMcpClient } from "./mcp/mongoClient.js";
+import { refreshMflixCollections } from "./mcp/mflixRefresh.js";
 import { resolveApiKey, resolveMongoUri } from "./auth/apiKey.js";
 import { ClientSocket } from "./websocket/clientSocket.js";
 import { GeminiStreamSession } from "./websocket/geminiStream.js";
@@ -122,6 +123,30 @@ wss.on("connection", (ws: WsWebSocket) => {
       case "interrupt":
         // Browser stops local playback; Gemini Live VAD picks it up.
         break;
+      case "mflix.refresh": {
+        const database = msg.database ?? "sample_mflix";
+        if (!mcp || !mcp.isConnected()) {
+          client.sendMflixCollections({
+            database,
+            collections: [],
+            error:
+              "MongoDB Atlas isn't connected — set a connection string in Settings and reconnect.",
+          });
+          break;
+        }
+        try {
+          const out = await refreshMflixCollections(mcp, database);
+          client.sendMflixCollections(out);
+        } catch (err) {
+          console.error("[ws] mflix.refresh failed:", err);
+          client.sendMflixCollections({
+            database,
+            collections: [],
+            error: String(err),
+          });
+        }
+        break;
+      }
     }
   });
 

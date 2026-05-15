@@ -18,7 +18,9 @@ export type ClientMessage =
       languageMode?: LanguageMode;
     }
   | { type: "audio"; data: string }
-  | { type: "interrupt" };
+  | { type: "interrupt" }
+  /** Refresh the Mflix collections reference panel from the live Atlas connection. */
+  | { type: "mflix.refresh"; database?: string };
 
 export type ConnectionComponent = "gemini" | "atlas";
 
@@ -85,6 +87,24 @@ export interface ResultsMessage {
   executedAt: string;
 }
 
+/**
+ * Reply to `mflix.refresh`. When `error` is set the UI shows that to the user
+ * and keeps its static fallback list. Otherwise `collections` is the freshly
+ * fetched list — count and exampleDocument are best-effort and may be omitted
+ * per collection if the relevant tool call failed.
+ */
+export interface MflixCollectionsMessage {
+  type: "mflix.collections";
+  database: string;
+  collections: Array<{
+    name: string;
+    estimatedCount?: number;
+    exampleDocument?: unknown;
+    error?: string;
+  }>;
+  error?: string;
+}
+
 export type ServerMessage =
   | TranscriptMessage
   | ThinkingMessage
@@ -92,4 +112,5 @@ export type ServerMessage =
   | AgentStatusMessage
   | ConnectionStatusMessage
   | CanvasUpdateMessage
-  | ResultsMessage;
+  | ResultsMessage
+  | MflixCollectionsMessage;

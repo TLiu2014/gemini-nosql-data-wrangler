@@ -11,11 +11,21 @@ export interface Settings {
   mongoUri: string;
   autoConnect: boolean;
   startMicMuted: boolean;
-  useSampleFlow: boolean;
+  /**
+   * What to put on the canvas at startup.
+   *   "data"   — two MQL_SOURCE nodes (movies + comments). Demo starting
+   *              point; the rest is built by talking to the agent.
+   *   "vector" — the legacy 3-stage $vectorSearch pipeline.
+   *   "none"   — empty canvas.
+   */
+  sampleFlow: "data" | "vector" | "none";
   /** "mflix" = use the loaded sample_mflix dataset; "upload" = user JSON (not yet wired). */
   dataset: "mflix" | "upload";
   /** Show the "Pipeline Schema" tab in the results panel. Off by default — most users care about rows. */
   showSchemaJson: boolean;
+  /** Show the "Mflix collections" reference tab in the results panel. Lets the presenter
+   *  point at what's in sample_mflix without needing a live Atlas connection. */
+  showMflixCollections: boolean;
   /**
    * "english" = strict English-only (default, recommended for demos): the agent
    *             is instructed to respond in English even if the user appears
@@ -34,9 +44,10 @@ const DEFAULT_SETTINGS: Settings = {
   mongoUri: "",
   autoConnect: false,
   startMicMuted: false,
-  useSampleFlow: true,
+  sampleFlow: "data",
   dataset: "mflix",
   showSchemaJson: false,
+  showMflixCollections: false,
   languageMode: "english",
 };
 

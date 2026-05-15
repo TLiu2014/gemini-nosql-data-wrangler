@@ -76,6 +76,24 @@ export class ClientSocket {
     });
   }
 
+  sendMflixCollections(args: {
+    database: string;
+    collections: Array<{
+      name: string;
+      estimatedCount?: number;
+      exampleDocument?: unknown;
+      error?: string;
+    }>;
+    error?: string;
+  }): void {
+    this.send({
+      type: "mflix.collections",
+      database: args.database,
+      collections: args.collections,
+      error: args.error,
+    });
+  }
+
   getCurrentCanvas(): string | null {
     return this.currentCanvas;
   }

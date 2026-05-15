@@ -10,12 +10,16 @@ import { useDragResize } from "@/hooks/useDragResize";
 import { useMicPermission } from "@/hooks/useMicPermission";
 import { useSettings } from "@/hooks/useSettings";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import { SAMPLE_MFLIX_VECTOR_FLOW } from "@/samples/sampleFlow";
+import {
+  SAMPLE_MFLIX_DEMO_FLOW,
+  SAMPLE_MFLIX_VECTOR_FLOW,
+} from "@/samples/sampleFlow";
 import type { ChatMessage } from "@/components/voice/ChatLog";
 import type { PipelineSchema } from "@/Schema";
 import type {
   AgentState,
   ConnectionState,
+  MflixCollectionsMessage,
   ResultsMessage,
   ServerMessage,
 } from "@/types/ws";
@@ -72,10 +76,24 @@ function displayableEnglishChunk(text: string): string | null {
 export default function App() {
   const { settings, update: updateSetting } = useSettings();
 
-  const [schema, setSchema] = useState<PipelineSchema | null>(
-    settings.useSampleFlow ? SAMPLE_MFLIX_VECTOR_FLOW : null,
-  );
+  const initialSchema =
+    settings.sampleFlow === "data"
+      ? SAMPLE_MFLIX_DEMO_FLOW
+      : settings.sampleFlow === "vector"
+        ? SAMPLE_MFLIX_VECTOR_FLOW
+        : null;
+  const [schema, setSchema] = useState<PipelineSchema | null>(initialSchema);
   const [results, setResults] = useState<ResultsMessage[]>([]);
+  // Active tab id in the results panel. Owned here so a click on a canvas
+  // stage node's "view output" link can flip the panel to that stage's tab.
+  // Stage ids match between canvas (StageNode `id`) and results (`ResultsMessage.stageId`).
+  const [activeResultsTab, setActiveResultsTab] = useState<string | null>(null);
+  // Live-fetched Mflix collections. `null` = no refresh attempted yet (the UI
+  // falls back to the static catalog); otherwise this is the most recent
+  // server reply (with either `collections` or `error`).
+  const [mflixRefresh, setMflixRefresh] =
+    useState<MflixCollectionsMessage | null>(null);
+  const [mflixRefreshing, setMflixRefreshing] = useState(false);
   const [chatLog, setChatLog] = useState<ChatMessage[]>([]);
   const [agent, setAgent] = useState<AgentState>("idle");
   const [agentDetail, setAgentDetail] = useState<string | undefined>(undefined);
@@ -264,6 +282,10 @@ export default function App() {
             return [...prev, msg];
           });
           break;
+        case "mflix.collections":
+          setMflixRefresh(msg);
+          setMflixRefreshing(false);
+          break;
         case "connection.status": {
           const component = msg.component ?? "gemini";
           if (component === "atlas") {
@@ -326,6 +348,11 @@ export default function App() {
     ws.send({ type: "interrupt" });
   }, [audio, ws]);
 
+  const handleRefreshMflix = useCallback(() => {
+    setMflixRefreshing(true);
+    ws.send({ type: "mflix.refresh" });
+  }, [ws]);
+
   // Auto-connect on load when the user has opted in via Settings.
   const didAutoConnect = useRef(false);
   useEffect(() => {
@@ -352,13 +379,20 @@ export default function App() {
   // problem is on the browser side (no mic input) vs the Gemini side (mic
   // works, model rejected). The user can mute manually if they want.
 
-  // When the user toggles useSampleFlow from off → on while disconnected, drop
-  // the sample flow back onto the canvas so they can see the change.
+  // When the user changes `sampleFlow` while disconnected, swap the canvas
+  // to match — so the toggle feels responsive without waiting for a refresh.
+  // We only auto-replace if the canvas isn't currently being driven by an
+  // active Gemini session (otherwise the agent's in-flight edits would be
+  // wiped out by the new sample).
+  const lastAppliedSample = useRef(settings.sampleFlow);
   useEffect(() => {
-    if (settings.useSampleFlow && !schema && ws.state !== "connected") {
-      setSchema(SAMPLE_MFLIX_VECTOR_FLOW);
-    }
-  }, [settings.useSampleFlow, schema, ws.state]);
+    if (lastAppliedSample.current === settings.sampleFlow) return;
+    lastAppliedSample.current = settings.sampleFlow;
+    if (ws.state === "connected") return;
+    if (settings.sampleFlow === "data") setSchema(SAMPLE_MFLIX_DEMO_FLOW);
+    else if (settings.sampleFlow === "vector") setSchema(SAMPLE_MFLIX_VECTOR_FLOW);
+    else setSchema(null);
+  }, [settings.sampleFlow, ws.state]);
 
   // When the user flips Language mode while connected, cycle the Gemini
   // session so the new system instruction + speechConfig take effect. The
@@ -440,6 +474,7 @@ export default function App() {
                 schema={schema}
                 readOnly
                 configDisplayMode="popover"
+                onShowOutput={setActiveResultsTab}
               />
             </ReactFlowProvider>
             {!schema && (
@@ -471,6 +506,13 @@ export default function App() {
               results={results}
               showSchemaJson={settings.showSchemaJson}
               showSampleData={settings.dataset === "mflix"}
+              showMflixCollections={settings.showMflixCollections}
+              mflixRefresh={mflixRefresh}
+              mflixRefreshing={mflixRefreshing}
+              onRefreshMflix={handleRefreshMflix}
+              atlasConnected={atlasConnection === "connected"}
+              activeTab={activeResultsTab}
+              onActiveTabChange={setActiveResultsTab}
             />
           </section>
         </main>

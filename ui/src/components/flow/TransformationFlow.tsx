@@ -18,6 +18,7 @@ import {
   applyEdgeChanges,
   applyNodeChanges,
   reconnectEdge,
+  useReactFlow,
   type Connection,
   type Edge,
   type EdgeChange,
@@ -119,6 +120,8 @@ export const TransformationFlow = forwardRef<
   // own onChange round-trips from the host.
   const lastEmitted = useRef<PipelineSchema | null>(null);
 
+  const rf = useReactFlow();
+
   // Load (or reload) from the schema prop — only when it's a genuinely new
   // schema from outside, not one we emitted ourselves.
   useEffect(() => {
@@ -131,7 +134,18 @@ export const TransformationFlow = forwardRef<
     setEdges(newEdges.map(withDefaultHandles));
     setSelectedNodeId(null);
     setEditingNodeId(null);
-  }, [schema]);
+    // Re-frame the viewport on the freshly-loaded pipeline. RAF defers until
+    // after React has flushed the new nodes/edges into the DOM so fitView
+    // measures the correct bounds. Wrapped in try/catch for the first render
+    // before React Flow has mounted its store.
+    requestAnimationFrame(() => {
+      try {
+        rf.fitView({ padding: 0.1, duration: 250 });
+      } catch {
+        /* not ready yet — onInit's fitView covers the initial mount */
+      }
+    });
+  }, [schema, rf]);
 
   const emit = useCallback(
     (emitNodes: Node<StageNodeData>[], emitEdges: Edge[]) => {

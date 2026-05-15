@@ -71,9 +71,9 @@ export default function TopBar({ settings, onSettingsChange }: TopBarProps) {
       {open && (
         <div
           ref={panelRef}
-          className="absolute right-4 top-14 z-50 w-[360px] rounded-lg border border-slate-200 bg-white text-slate-800 shadow-xl"
+          className="absolute right-4 top-14 z-50 flex max-h-[calc(100vh-5rem)] w-[360px] flex-col rounded-lg border border-slate-200 bg-white text-slate-800 shadow-xl"
         >
-          <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+          <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-4 py-3">
             <h3 className="text-sm font-semibold">Settings</h3>
             <button
               onClick={() => setOpen(false)}
@@ -84,7 +84,7 @@ export default function TopBar({ settings, onSettingsChange }: TopBarProps) {
             </button>
           </div>
 
-          <div className="space-y-4 p-4">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
             {/* API key */}
             <section className="space-y-1.5">
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
@@ -231,11 +231,23 @@ export default function TopBar({ settings, onSettingsChange }: TopBarProps) {
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
                 Sample Flow
               </label>
-              <Check
-                checked={settings.useSampleFlow}
-                onChange={(v) => onSettingsChange("useSampleFlow", v)}
-                label="Load sample pipeline on startup"
-                hint="A 3-stage MongoDB pipeline with $vectorSearch over embedded_movies."
+              <Radio
+                checked={settings.sampleFlow === "data"}
+                onChange={() => onSettingsChange("sampleFlow", "data")}
+                label="Load sample data"
+                hint="Two MQL_SOURCE nodes — embedded_movies and comments — sitting side by side. Talk to Gemini to add lookup, filter, and group stages."
+              />
+              <Radio
+                checked={settings.sampleFlow === "vector"}
+                onChange={() => onSettingsChange("sampleFlow", "vector")}
+                label="Load sample flow"
+                hint="The pre-built 3-stage $vectorSearch pipeline over embedded_movies."
+              />
+              <Radio
+                checked={settings.sampleFlow === "none"}
+                onChange={() => onSettingsChange("sampleFlow", "none")}
+                label="Empty canvas"
+                hint="Start blank — the agent builds everything from scratch as you talk."
               />
             </section>
 
@@ -249,6 +261,12 @@ export default function TopBar({ settings, onSettingsChange }: TopBarProps) {
                 onChange={(v) => onSettingsChange("showSchemaJson", v)}
                 label="Show pipeline schema JSON tab"
                 hint="The schema view is useful for debugging; hide it for a cleaner demo."
+              />
+              <Check
+                checked={settings.showMflixCollections}
+                onChange={(v) => onSettingsChange("showMflixCollections", v)}
+                label="Show Mflix collections reference tab"
+                hint="Static catalog of sample_mflix collections (movies, comments, users, theaters, ...) with example documents — useful for showing what data is available."
               />
             </section>
           </div>

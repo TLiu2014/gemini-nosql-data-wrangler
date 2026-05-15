@@ -96,7 +96,7 @@ export class GeminiStreamSession {
     ];
 
     console.log(
-      `[gemini] opening Live session — model=${this.model}, atlas=${atlasAvailable ? "up" : "down"}, mcpTools=${mcpDecls.length}, customTools=${getCustomToolDeclarations().length}`,
+      `[gemini] opening Live session — model=${this.model}, atlas=${atlasAvailable ? "up" : "down"}, mcpTools=${mcpDecls.length} (${mcpDecls.map((d) => d.name).join(", ")}), customTools=${getCustomToolDeclarations().length}, sysInstrBytes=${systemInstruction.length}`,
     );
     this.client.sendConnectionStatus("connecting");
 
@@ -157,6 +157,15 @@ export class GeminiStreamSession {
           const code = (ev as { code?: number })?.code;
           const reason = (ev as { reason?: string })?.reason;
           console.log("[gemini] Live session closed:", code, reason);
+          if (code === 1011) {
+            console.error(
+              "[gemini] 1011 internal error usually means the function declarations payload is invalid. " +
+                "Inspect the most recent 'opening Live session' log line. Common causes: " +
+                "(a) too many tools, (b) JSON Schema keywords Gemini doesn't accept, " +
+                "(c) tool names violating the [a-zA-Z0-9_-]{1,64} pattern, " +
+                "(d) system instruction too large.",
+            );
+          }
           // 1000 = normal closure. Anything else (1006 transport drop, 1008
           // policy violation like an unknown model, etc.) is an error the user
           // should see in the UI rather than as a silent "disconnected" state.

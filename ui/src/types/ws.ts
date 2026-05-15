@@ -19,7 +19,11 @@ export type ClientMessage =
       languageMode?: "english" | "international";
     }
   | { type: "audio"; data: string } // base64-encoded Int16 PCM @ 16 kHz, mono
-  | { type: "interrupt" };
+  | { type: "interrupt" }
+  /** Ask the server to refresh the Mflix-collections reference panel from the
+   *  live Atlas connection. Requires Atlas to be connected; otherwise the
+   *  server replies with `{type: "mflix.collections", error}`. */
+  | { type: "mflix.refresh"; database?: string };
 
 /** Which backend component a `connection.status` message refers to. */
 export type ConnectionComponent = "gemini" | "atlas";
@@ -97,6 +101,22 @@ export interface ResultsMessage {
   executedAt: string;
 }
 
+/**
+ * Reply to a `mflix.refresh` request. Counts and example documents are
+ * best-effort and may be omitted per collection if a tool call failed.
+ */
+export interface MflixCollectionsMessage {
+  type: "mflix.collections";
+  database: string;
+  collections: Array<{
+    name: string;
+    estimatedCount?: number;
+    exampleDocument?: unknown;
+    error?: string;
+  }>;
+  error?: string;
+}
+
 /** Server-sent message types. */
 export type ServerMessage =
   | TranscriptMessage
@@ -105,4 +125,5 @@ export type ServerMessage =
   | AgentStatusMessage
   | ConnectionStatusMessage
   | CanvasUpdateMessage
-  | ResultsMessage;
+  | ResultsMessage
+  | MflixCollectionsMessage;
