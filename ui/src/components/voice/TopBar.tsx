@@ -5,9 +5,16 @@ import type { Settings } from "@/hooks/useSettings";
 interface TopBarProps {
   settings: Settings;
   onSettingsChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+  /** Fired when the user clicks Save on API key / Mongo URI inputs. The host
+   *  uses it to flash a confirmation message in the sidebar status bar. */
+  onSaveNotice?: (message: string) => void;
 }
 
-export default function TopBar({ settings, onSettingsChange }: TopBarProps) {
+export default function TopBar({
+  settings,
+  onSettingsChange,
+  onSaveNotice,
+}: TopBarProps) {
   const [open, setOpen] = useState(false);
   const [draftKey, setDraftKey] = useState(settings.apiKey);
   const [draftMongoUri, setDraftMongoUri] = useState(settings.mongoUri);
@@ -102,7 +109,7 @@ export default function TopBar({ settings, onSettingsChange }: TopBarProps) {
                   type="button"
                   onClick={() => {
                     onSettingsChange("apiKey", draftKey.trim());
-                    setOpen(false);
+                    onSaveNotice?.("API key saved — reconnect to apply");
                   }}
                   className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-blue-700"
                 >
@@ -140,7 +147,9 @@ export default function TopBar({ settings, onSettingsChange }: TopBarProps) {
                   type="button"
                   onClick={() => {
                     onSettingsChange("mongoUri", draftMongoUri.trim());
-                    setOpen(false);
+                    onSaveNotice?.(
+                      "MongoDB connection string saved — reconnect to apply",
+                    );
                   }}
                   className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-blue-700"
                 >
@@ -206,23 +215,22 @@ export default function TopBar({ settings, onSettingsChange }: TopBarProps) {
               />
             </section>
 
-            {/* Dataset */}
+            {/* Layout */}
             <section className="space-y-1.5">
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
-                Dataset
+                Layout
               </label>
               <Radio
-                checked={settings.dataset === "mflix"}
-                onChange={() => onSettingsChange("dataset", "mflix")}
-                label="MongoDB sample_mflix dataset"
-                hint="Uses the read-only sample data loaded into your Atlas cluster."
+                checked={settings.layoutMode === "stacked"}
+                onChange={() => onSettingsChange("layoutMode", "stacked")}
+                label="Canvas on top, results below"
+                hint="Default. Inside results, the document table is on the left, JSON view on the right."
               />
               <Radio
-                checked={settings.dataset === "upload"}
-                onChange={() => onSettingsChange("dataset", "upload")}
-                label="Upload your own JSON"
-                hint="Drag-and-drop NoSQL documents into a temporary collection — coming soon."
-                disabled
+                checked={settings.layoutMode === "side-by-side"}
+                onChange={() => onSettingsChange("layoutMode", "side-by-side")}
+                label="Canvas on the left, results on the right"
+                hint="Inside results, the document table is on top and the JSON view is below — each occupies half the height."
               />
             </section>
 
@@ -246,8 +254,8 @@ export default function TopBar({ settings, onSettingsChange }: TopBarProps) {
               <Radio
                 checked={settings.sampleFlow === "none"}
                 onChange={() => onSettingsChange("sampleFlow", "none")}
-                label="Empty canvas"
-                hint="Start blank — the agent builds everything from scratch as you talk."
+                label="No sample"
+                hint="Start with nothing loaded — empty canvas and empty results. The agent builds everything from scratch as you talk."
               />
             </section>
 
@@ -267,6 +275,46 @@ export default function TopBar({ settings, onSettingsChange }: TopBarProps) {
                 onChange={(v) => onSettingsChange("showMflixCollections", v)}
                 label="Show Mflix collections reference tab"
                 hint="Static catalog of sample_mflix collections (movies, comments, users, theaters, ...) with example documents — useful for showing what data is available."
+              />
+            </section>
+
+            {/* Chat panel */}
+            <section className="space-y-1.5">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
+                Chat Panel
+              </label>
+              <Check
+                checked={settings.enableTextInput}
+                onChange={(v) => onSettingsChange("enableTextInput", v)}
+                label="Enable text message input"
+                hint="Adds a fallback text box + Send button below the agent chat. Off by default — primary UX is voice via the always-on mic."
+              />
+            </section>
+
+            {/* Transcription — bottom of the panel since it's a power-user
+                toggle, not part of the main user flow. */}
+            <section className="space-y-1.5 border-t border-slate-200 pt-3">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
+                Voice Transcription
+              </label>
+              <p className="text-[11px] text-slate-500">
+                Source for the user-speech text shown in the agent trace. The audio still goes to Gemini directly for the agent's reasoning regardless of this choice.
+              </p>
+              <Radio
+                checked={settings.transcriptionMethod === "live"}
+                onChange={() =>
+                  onSettingsChange("transcriptionMethod", "live")
+                }
+                label="Gemini Live API (default)"
+                hint="Opens a dedicated TEXT-only Live session for transcription. Higher fidelity than Web Speech, but uses one extra audio path per turn and counts against your Gemini quota."
+              />
+              <Radio
+                checked={settings.transcriptionMethod === "webspeech"}
+                onChange={() =>
+                  onSettingsChange("transcriptionMethod", "webspeech")
+                }
+                label="Browser Web Speech API"
+                hint="Chrome/Edge/Safari native STT. Free, low latency, but accuracy varies and Firefox isn't supported."
               />
             </section>
           </div>

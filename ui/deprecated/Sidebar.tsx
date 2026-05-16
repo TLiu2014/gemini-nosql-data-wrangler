@@ -11,6 +11,7 @@ interface SidebarProps {
   atlasConnection: ConnectionState;
   atlasDetail?: string;
   agent: AgentState;
+  agentDetail?: string;
   micActive: boolean;
   micPermission: MicPermissionState;
   audioPaused: boolean;
@@ -91,15 +92,31 @@ function StatusRow({
   state: ConnectionState;
   detail?: string;
 }) {
+  // Show errors on a second line so the full message is readable without
+  // hovering — connection-string mistakes are hard to debug from a tooltip.
+  const isError = state === "error";
   return (
-    <div className="flex items-center justify-between gap-2 text-xs">
-      <div className="flex items-center gap-2">
-        <StatusDot state={state} />
-        <span className="font-medium text-slate-700">{label}</span>
+    <div className="space-y-1 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <StatusDot state={state} />
+          <span className="font-medium text-slate-700">{label}</span>
+        </div>
+        <span
+          className={cn(
+            "truncate text-[11px]",
+            isError ? "text-rose-600" : "text-slate-500",
+          )}
+          title={detail}
+        >
+          {isError ? "Error" : statusLabel(state, detail)}
+        </span>
       </div>
-      <span className="truncate text-[11px] text-slate-500" title={detail}>
-        {statusLabel(state, detail)}
-      </span>
+      {isError && detail && (
+        <div className="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-[10.5px] leading-snug text-rose-700">
+          {detail}
+        </div>
+      )}
     </div>
   );
 }
@@ -109,6 +126,8 @@ export default function Sidebar({
   geminiDetail,
   atlasConnection,
   atlasDetail,
+  agent,
+  agentDetail,
   micActive,
   micPermission,
   audioPaused,
@@ -265,7 +284,11 @@ export default function Sidebar({
           Conversation
         </div>
         <div className="min-h-0 flex-1 overflow-hidden">
-          <ChatLog messages={chatLog} />
+          <ChatLog
+            messages={chatLog}
+            agentState={agent}
+            agentDetail={agentDetail}
+          />
         </div>
       </div>
     </aside>

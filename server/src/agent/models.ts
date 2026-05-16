@@ -20,6 +20,30 @@
  * to A/B a new release without editing imports.
  */
 
-// export const DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-live";                             // Not published. Closes WS 1008.
-// export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025";     // AI Studio. Better audio, BUT closes WS 1008 on every tool call.
-export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-native-audio-preview-09-2025";        // AI Studio. Verified working with tool calling — our default.
+// Phase 2/3 uses the standard generateContent / chats.create API — NOT the
+// Live API. The `*-live-*` / `*-native-audio-*` model IDs are Live-only and
+// will fail with the new architecture. Multimodal input (audio Parts via
+// inlineData) is supported by the standard generateContent path on most
+// Gemini 2.5 / 3.x models.
+//
+// As of Gemini API docs (May 2026), the active line below is the most
+// reliable free-tier-friendly model that supports audio inline data
+// for generateContent. Flip the active line if you hit a 503/429 on the
+// current one — keep them all here so it's a one-line swap.
+export const DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite";
+
+// Alternates (verified-real model IDs):
+// export const DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview";   // hit 503 (high demand) under free tier
+// export const DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview";   // Pro tier — much tighter free-tier rate limits; expect 429 under sustained use
+// export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";          // stable GA fallback
+
+// HOLD: separate transcription model. Tried `gemini-3-flash-preview` for
+// the `echoUserSpeech` side-call but it didn't materially improve verbatim
+// transcription quality — see the discussion in the chat for alternatives.
+// export const TRANSCRIPTION_MODEL = "gemini-3-flash-preview";
+
+// DEPRECATED — Live API model IDs. Kept for reference if we ever flip
+// back to streaming voice.
+// export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-native-audio-preview-09-2025";
+// export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025";
+// export const DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-live-preview";

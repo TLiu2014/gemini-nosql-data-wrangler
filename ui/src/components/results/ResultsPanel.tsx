@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Database, ListTree, RefreshCw } from "lucide-react";
 import { JsonView } from "@/components/views/JsonView";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/Tabs";
-import { SAMPLE_MFLIX_EMBEDDED_MOVIES } from "@/samples/sampleData";
 import { MFLIX_COLLECTIONS } from "@/samples/mflixCollections";
 import { useDragResize } from "@/hooks/useDragResize";
 import { cn } from "@/lib/Utils";
@@ -14,8 +13,6 @@ interface ResultsPanelProps {
   schema: PipelineSchema | null;
   results: ResultsMessage[];
   showSchemaJson: boolean;
-  /** When true, show a "Sample data" tab seeded from sample_mflix.embedded_movies. */
-  showSampleData: boolean;
   /** When true, show a "Mflix collections" reference tab listing the sample_mflix collections. */
   showMflixCollections: boolean;
   /** Most-recent live refresh from Atlas (overrides the static catalog); null until requested. */
@@ -31,9 +28,12 @@ interface ResultsPanelProps {
    *  on a stage node can switch the result panel to that stage's tab. */
   activeTab?: string | null;
   onActiveTabChange?: (tabId: string) => void;
+  /** Orientation for the document table / JSON pane split inside each tab.
+   *  `horizontal` (default) = table left, JSON right.
+   *  `vertical`             = table top, JSON bottom. */
+  splitOrientation?: "horizontal" | "vertical";
 }
 
-const SAMPLE_TAB_ID = "__sample__";
 const SCHEMA_TAB_ID = "__schema__";
 const MFLIX_TAB_ID = "__mflix__";
 
@@ -45,7 +45,6 @@ export default function ResultsPanel({
   schema,
   results,
   showSchemaJson,
-  showSampleData,
   showMflixCollections,
   mflixRefresh,
   mflixRefreshing,
@@ -53,6 +52,7 @@ export default function ResultsPanel({
   atlasConnected,
   activeTab,
   onActiveTabChange,
+  splitOrientation = "horizontal",
 }: ResultsPanelProps) {
   // Tabs are sourced from the canvas (one per stage), so every node's
   // "view output" link always has a tab to land on, regardless of whether
@@ -65,14 +65,20 @@ export default function ResultsPanel({
   // canvas (e.g. agent removed it), we surface that one too rather than
   // dropping it.
   const tabs = useMemo(() => {
+    // Defensive coercion — the agent occasionally ships non-string values
+    // where strings are required, which crashes React when we try to render
+    // them as tab labels.
+    const str = (v: unknown, fallback: string): string =>
+      typeof v === "string" && v.trim() ? v : fallback;
     const resultsById = new Map(results.map((r) => [r.stageId, r] as const));
     const stageIds = new Set<string>();
-    const fromStages = (schema?.stages ?? []).map((s) => {
-      stageIds.add(s.id);
-      const r = resultsById.get(s.id);
+    const fromStages = (schema?.stages ?? []).map((s, i) => {
+      const id = str(s.id, `stage_${i + 1}`);
+      stageIds.add(id);
+      const r = resultsById.get(id);
       return {
-        id: s.id,
-        label: s.output || s.name || s.id,
+        id,
+        label: str(s.output, str(s.name, id)),
         rows: r?.rows ?? null,
         placeholder: !r,
       };
@@ -81,22 +87,23 @@ export default function ResultsPanel({
       .filter((r) => !stageIds.has(r.stageId))
       .map((r) => ({
         id: r.stageId,
-        label: r.label ?? r.stageId,
+        label: str(r.label, r.stageId),
         rows: r.rows,
         placeholder: false,
       }));
     return [...fromStages, ...orphans];
   }, [schema, results]);
 
-  // Prefer the most recently arrived real result; fall back to the first
-  // placeholder tab; then sample/schema.
+  // Prefer the most recently arrived real result, so the user lands on the
+  // stage they just executed. Otherwise fall back to the leftmost tab: Mflix
+  // collections (if shown) → first stage tab → Pipeline schema.
   const defaultTab = useMemo(() => {
     if (results.length > 0) return results[results.length - 1].stageId;
+    if (showMflixCollections) return MFLIX_TAB_ID;
     if (tabs.length > 0) return tabs[0].id;
-    if (showSampleData) return SAMPLE_TAB_ID;
     if (showSchemaJson) return SCHEMA_TAB_ID;
-    return SAMPLE_TAB_ID;
-  }, [results, tabs, showSampleData, showSchemaJson]);
+    return MFLIX_TAB_ID;
+  }, [results, tabs, showMflixCollections, showSchemaJson]);
 
   // Internal state is a fallback for when the host doesn't pass `activeTab`.
   // When `activeTab` IS passed we still keep this in sync so onValueChange
@@ -113,10 +120,9 @@ export default function ResultsPanel({
     const stillValid =
       tabs.some((t) => t.id === active) ||
       (active === SCHEMA_TAB_ID && showSchemaJson) ||
-      (active === SAMPLE_TAB_ID && showSampleData) ||
       (active === MFLIX_TAB_ID && showMflixCollections);
     return stillValid ? active : defaultTab;
-  }, [active, tabs, showSchemaJson, showSampleData, showMflixCollections, defaultTab]);
+  }, [active, tabs, showSchemaJson, showMflixCollections, defaultTab]);
 
   return (
     <Tabs
@@ -125,6 +131,15 @@ export default function ResultsPanel({
       className="flex h-full flex-col bg-white"
     >
       <TabsList className="shrink-0">
+        {showMflixCollections && (
+          <TabsTrigger value={MFLIX_TAB_ID}>
+            <Database className="mr-1 inline h-3 w-3" />
+            Mflix collections
+            <span className="ml-1 rounded bg-amber-50 px-1 py-0.5 text-[10px] text-amber-700">
+              {MFLIX_COLLECTIONS.length}
+            </span>
+          </TabsTrigger>
+        )}
         {tabs.map((t) => (
           <TabsTrigger key={t.id} value={t.id}>
             {t.label}
@@ -139,33 +154,13 @@ export default function ResultsPanel({
             </span>
           </TabsTrigger>
         ))}
-        {showSampleData && (
-          <TabsTrigger value={SAMPLE_TAB_ID}>
-            Sample data
-            <span className="ml-1 rounded bg-emerald-50 px-1 py-0.5 text-[10px] text-emerald-700">
-              {SAMPLE_MFLIX_EMBEDDED_MOVIES.length}
-            </span>
-          </TabsTrigger>
-        )}
-        {showMflixCollections && (
-          <TabsTrigger value={MFLIX_TAB_ID}>
-            <Database className="mr-1 inline h-3 w-3" />
-            Mflix collections
-            <span className="ml-1 rounded bg-amber-50 px-1 py-0.5 text-[10px] text-amber-700">
-              {MFLIX_COLLECTIONS.length}
-            </span>
-          </TabsTrigger>
-        )}
         {showSchemaJson && (
           <TabsTrigger value={SCHEMA_TAB_ID}>
             <ListTree className="mr-1 inline h-3 w-3" />
             Pipeline schema
           </TabsTrigger>
         )}
-        {tabs.length === 0 &&
-          !showSampleData &&
-          !showSchemaJson &&
-          !showMflixCollections && (
+        {tabs.length === 0 && !showSchemaJson && !showMflixCollections && (
           <span className="ml-2 self-center text-[11px] italic text-slate-400">
             No results yet — ask the agent to find something.
           </span>
@@ -180,19 +175,14 @@ export default function ResultsPanel({
               the <span className="not-italic font-mono text-slate-500">{t.label}</span> stage.
             </div>
           ) : (
-            <DocumentsSplitView rows={t.rows ?? []} label={t.label} />
+            <DocumentsSplitView
+              rows={t.rows ?? []}
+              label={t.label}
+              orientation={splitOrientation}
+            />
           )}
         </TabsContent>
       ))}
-
-      {showSampleData && (
-        <TabsContent value={SAMPLE_TAB_ID} className="min-h-0">
-          <DocumentsSplitView
-            rows={SAMPLE_MFLIX_EMBEDDED_MOVIES}
-            label="sample_mflix.embedded_movies"
-          />
-        </TabsContent>
-      )}
 
       {showMflixCollections && (
         <TabsContent value={MFLIX_TAB_ID} className="min-h-0">
@@ -201,6 +191,7 @@ export default function ResultsPanel({
             refreshing={!!mflixRefreshing}
             onRefresh={onRefreshMflix}
             atlasConnected={!!atlasConnected}
+            orientation={splitOrientation}
           />
         </TabsContent>
       )}
@@ -232,16 +223,23 @@ export default function ResultsPanel({
 }
 
 /**
- * Side-by-side: table (left) + JSON pane (right) with a draggable border.
- * Clicking a row in the table focuses its document in the JSON pane; clicking
- * the same row again deselects, returning to the full array view.
+ * Document table + JSON pane with a draggable border. Orientation switches
+ * between left/right (`horizontal`) and top/bottom (`vertical`) — used by
+ * the two main layouts: stacked (canvas-on-top) keeps documents left+right;
+ * side-by-side (canvas-on-left) flips them to top+bottom so each occupies
+ * half of the right-hand column.
+ *
+ * Clicking a row in the table focuses its document in the JSON pane;
+ * clicking the same row again deselects.
  */
 function DocumentsSplitView({
   rows,
   label,
+  orientation = "horizontal",
 }: {
   rows: unknown[];
   label: string;
+  orientation?: "horizontal" | "vertical";
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
@@ -251,12 +249,19 @@ function DocumentsSplitView({
     setSelectedIndex(null);
   }, [rows]);
 
-  const split = useDragResize<number>(SPLIT_DEFAULT, "x", (e) => {
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return SPLIT_DEFAULT;
-    const pct = ((e.clientX - rect.left) / rect.width) * 100;
-    return Math.max(SPLIT_MIN, Math.min(SPLIT_MAX, pct));
-  });
+  const split = useDragResize<number>(
+    SPLIT_DEFAULT,
+    orientation === "horizontal" ? "x" : "y",
+    (e) => {
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return SPLIT_DEFAULT;
+      const pct =
+        orientation === "horizontal"
+          ? ((e.clientX - rect.left) / rect.width) * 100
+          : ((e.clientY - rect.top) / rect.height) * 100;
+      return Math.max(SPLIT_MIN, Math.min(SPLIT_MAX, pct));
+    },
+  );
 
   const focused = selectedIndex !== null ? rows[selectedIndex] : null;
   const jsonData = focused ?? rows;
@@ -275,11 +280,25 @@ function DocumentsSplitView({
       `${rows.length} document${rows.length === 1 ? "" : "s"}`
     );
 
+  const isHorizontal = orientation === "horizontal";
+  const firstSize: React.CSSProperties = isHorizontal
+    ? { width: `${split.value}%` }
+    : { height: `${split.value}%` };
+  const secondSize: React.CSSProperties = isHorizontal
+    ? { width: `${100 - split.value}%` }
+    : { height: `${100 - split.value}%` };
+
   return (
-    <div ref={containerRef} className="flex h-full min-h-0 min-w-0">
+    <div
+      ref={containerRef}
+      className={cn(
+        "flex h-full min-h-0 min-w-0",
+        isHorizontal ? "flex-row" : "flex-col",
+      )}
+    >
       <div
-        className="flex h-full min-h-0 min-w-0 flex-col"
-        style={{ width: `${split.value}%` }}
+        className="flex min-h-0 min-w-0 flex-col"
+        style={firstSize}
       >
         <DocumentsTreeView
           rows={rows}
@@ -291,13 +310,18 @@ function DocumentsSplitView({
       {/* Drag handle */}
       <div
         onMouseDown={split.onMouseDown}
-        className="w-1 shrink-0 cursor-col-resize bg-slate-200 transition-colors hover:bg-blue-400"
+        className={cn(
+          "shrink-0 bg-slate-200 transition-colors hover:bg-blue-400",
+          isHorizontal
+            ? "w-1 cursor-col-resize"
+            : "h-1 cursor-row-resize",
+        )}
         title="Drag to resize"
       />
 
       <div
-        className="flex h-full min-h-0 min-w-0 flex-col"
-        style={{ width: `${100 - split.value}%` }}
+        className="flex min-h-0 min-w-0 flex-col"
+        style={secondSize}
       >
         <JsonView
           data={jsonData}
@@ -327,21 +351,30 @@ function MflixCollectionsView({
   refreshing,
   onRefresh,
   atlasConnected,
+  orientation = "horizontal",
 }: {
   refresh: MflixCollectionsMessage | null;
   refreshing: boolean;
   onRefresh?: () => void;
   atlasConnected: boolean;
+  orientation?: "horizontal" | "vertical";
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
 
-  const split = useDragResize<number>(SPLIT_DEFAULT, "x", (e) => {
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return SPLIT_DEFAULT;
-    const pct = ((e.clientX - rect.left) / rect.width) * 100;
-    return Math.max(SPLIT_MIN, Math.min(SPLIT_MAX, pct));
-  });
+  const split = useDragResize<number>(
+    SPLIT_DEFAULT,
+    orientation === "horizontal" ? "x" : "y",
+    (e) => {
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return SPLIT_DEFAULT;
+      const pct =
+        orientation === "horizontal"
+          ? ((e.clientX - rect.left) / rect.width) * 100
+          : ((e.clientY - rect.top) / rect.height) * 100;
+      return Math.max(SPLIT_MIN, Math.min(SPLIT_MAX, pct));
+    },
+  );
 
   // Build the merged list each render. Cheap (<10 entries) so no memo needed.
   const items = useMemo(() => {
@@ -439,10 +472,20 @@ function MflixCollectionsView({
         </div>
       )}
 
-      <div ref={containerRef} className="flex min-h-0 flex-1 min-w-0">
+      <div
+        ref={containerRef}
+        className={cn(
+          "flex min-h-0 flex-1 min-w-0",
+          orientation === "horizontal" ? "flex-row" : "flex-col",
+        )}
+      >
         <div
-          className="flex h-full min-h-0 min-w-0 flex-col bg-white"
-          style={{ width: `${split.value}%` }}
+          className="flex min-h-0 min-w-0 flex-col bg-white"
+          style={
+            orientation === "horizontal"
+              ? { width: `${split.value}%` }
+              : { height: `${split.value}%` }
+          }
         >
           <ul className="min-h-0 flex-1 overflow-auto">
             {items.map((c, i) => {
@@ -501,13 +544,22 @@ function MflixCollectionsView({
         {/* Drag handle */}
         <div
           onMouseDown={split.onMouseDown}
-          className="w-1 shrink-0 cursor-col-resize bg-slate-200 transition-colors hover:bg-blue-400"
+          className={cn(
+            "shrink-0 bg-slate-200 transition-colors hover:bg-blue-400",
+            orientation === "horizontal"
+              ? "w-1 cursor-col-resize"
+              : "h-1 cursor-row-resize",
+          )}
           title="Drag to resize"
         />
 
         <div
-          className="flex h-full min-h-0 min-w-0 flex-col"
-          style={{ width: `${100 - split.value}%` }}
+          className="flex min-h-0 min-w-0 flex-col"
+          style={
+            orientation === "horizontal"
+              ? { width: `${100 - split.value}%` }
+              : { height: `${100 - split.value}%` }
+          }
         >
           {selected ? (
             <JsonView

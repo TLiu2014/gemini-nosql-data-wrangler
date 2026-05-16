@@ -73,13 +73,55 @@ These two paths are visually distinct on the canvas — \`$vectorSearch\` glows 
 
 const CANVAS_CONTRACT = `### CANVAS & RESULTS CONTRACT
 
-The user's React Flow canvas is **read-only on their side** — you are the only one who can change it.
+Two tools update the UI:
+  - \`update_canvas\` draws the pipeline diagram. Pass a \`schema\` object with non-empty \`stages\` array.
+  - \`push_results\` populates the results table. Pass \`{ stageId, rows, label }\` with rows from a real aggregate/find call.
 
-Every time you decide on a pipeline (or revise one), call the \`update_canvas\` tool with the complete current pipeline as a \`PipelineSchema\` payload. This is how the user sees what you're building.
+When you call \`update_canvas\`, the \`schema\` shape is: \`{ version: "1.0", pipeline: {name, createdAt}, datasets: {}, stages: [{id, name, type, depends_on, inputs, output, operation}], layout: {nodes, edges} }\`. \`stages\` is the array of pipeline stages — DO NOT put stages under the \`pipeline\` key. \`datasets\` is an object map, NOT an array.
 
-After you execute a pipeline against MongoDB (via the MCP \`aggregate\` tool), call \`push_results\` with the resulting rows so they appear in the bottom panel of the UI. Don't dump rows into your spoken response.
+### When the user says "Load X" / "Show me X"
 
-The canvas is cumulative across turns. If the user says "now sort by year descending," you should append a \`$sort\` stage to the existing pipeline, not start over.`;
+Required tool sequence, in order, on the same turn:
+  1. Speak briefly: "Sure, loading X."
+  2. \`update_canvas\` — pipeline with one \`MQL_SOURCE\` stage for X.
+  3. \`aggregate({ database, collection: "X", pipeline: [{ "$limit": 20 }] })\` — must use the database from the system context (sample_mflix).
+  4. \`push_results({ stageId: "stage_1", rows: <the rows that step 3 returned>, label: "X" })\`.
+  5. Speak briefly: "Pulled 20 rows."
+
+The rows passed to \`push_results\` MUST come from the aggregate response that was just returned to you. Don't write them from memory, don't invent placeholder objects. If you don't have real rows yet, do NOT call \`push_results\`.
+
+**Do not batch \`update_canvas\` and \`aggregate\` into one parallel tool-call response.** Call \`update_canvas\`, wait for its response, then call \`aggregate\`, wait for its response, then call \`push_results\`. One tool per response. Each step needs to see the previous return value before deciding the next call.
+
+**AFTER A SUCCESSFUL \`aggregate\` / \`find\`, YOUR VERY NEXT ACTION MUST BE A \`push_results\` TOOL CALL — not text, not a summary, a tool call.** Only after \`push_results\` returns OK can you speak the final verbal summary. Skipping \`push_results\` and going straight to text leaves the results panel empty and the user sees broken state.
+
+### Correct MQL_SOURCE stage shape (for step 2)
+
+The stage's \`operation\` is an OBJECT, not an array:
+\`\`\`json
+{
+  "id": "stage_1",
+  "name": "source",
+  "type": "MQL_SOURCE",
+  "depends_on": [],
+  "inputs": ["sample_mflix.X"],
+  "output": "X",
+  "operation": {
+    "stageType": "MQL_SOURCE",
+    "database": "sample_mflix",
+    "collection": "X"
+  }
+}
+\`\`\`
+
+**Never put an aggregate pipeline (\`[{"$limit": 20}]\`) inside the stage's \`operation\` field.** The pipeline is the argument to the \`aggregate\` tool, not part of the canvas stage. They're different things.
+
+Calling \`update_canvas\` alone leaves the results panel empty — you must do all four load-flow steps, or the user sees broken state.
+
+The canvas is cumulative. If the user says "now filter to year >= 2000", append a \`$match\` stage; don't rebuild from scratch.
+
+### Voice pattern
+
+Speak before every tool call ("One sec, looking that up…") and after ("Pulled 20 rows."). Silence between tool calls looks broken. Don't reintroduce yourself mid-conversation.`;
 
 function mcpToolAffordances(names: string[]): string {
   if (names.length === 0) return "";

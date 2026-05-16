@@ -10,15 +10,35 @@
 
 export type LanguageMode = "english" | "international";
 
+/**
+ * Gemini Live model identifiers the UI can select between. Keep the union
+ * narrow (don't accept arbitrary strings) so the UI's radio buttons map
+ * 1:1 to verified-working models.
+ */
+export type GeminiModelChoice =
+  | "gemini-2.5-flash-native-audio-preview-09-2025"
+  | "gemini-3.1-flash-live-preview";
+
 export type ClientMessage =
   | {
       type: "init";
       apiKey?: string;
       mongoUri?: string;
       languageMode?: LanguageMode;
+      /** Optional override for the Gemini Live model. Falls back to env.GEMINI_MODEL. */
+      geminiModel?: GeminiModelChoice;
     }
-  | { type: "audio"; data: string }
-  | { type: "interrupt" }
+  | { type: "audio"; data: string } // DEPRECATED — Live API streaming voice path
+  | { type: "interrupt" } // DEPRECATED
+  /** User typed a chat message. Phase 2 ReAct loop dispatches this to the agent. */
+  | { type: "user.text"; text: string }
+  /**
+   * User push-to-talk audio clip — base64-encoded blob from MediaRecorder.
+   * Sent as a single message after the user releases the mic button. The
+   * server forwards it as an inline-data Part to Gemini, which transcribes
+   * and reasons in one shot.
+   */
+  | { type: "user.audio"; mimeType: string; data: string }
   /** Refresh the Mflix collections reference panel from the live Atlas connection. */
   | { type: "mflix.refresh"; database?: string };
 
@@ -105,6 +125,40 @@ export interface MflixCollectionsMessage {
   error?: string;
 }
 
+/**
+ * Phase 2 trace event — emitted from the ReAct agent loop so the UI's
+ * developer-style trace panel can show what the agent is doing.
+ *
+ *   tool_call_start  → "🛠️ Calling tool: <name>(<args>)"
+ *   tool_call_result → "👁️ Observing: <preview>" (or error)
+ *   agent_text       → model's final text reply for a turn
+ *   turn_complete    → end of one user turn
+ *   info             → free-form info line (system instruction snapshots, etc.)
+ *   error            → loop-level errors (model failed, schema validation, …)
+ */
+export interface TraceMessage {
+  type: "trace";
+  kind:
+    | "tool_call_start"
+    | "tool_call_result"
+    | "agent_text"
+    | "user_text"
+    | "turn_complete"
+    | "info"
+    | "error";
+  /** Human-readable label, e.g. tool name. */
+  label?: string;
+  /** Tool args (start) or result (end). */
+  payload?: unknown;
+  /** True when `payload` represents an error rather than a normal result. */
+  isError?: boolean;
+  /** Free-form text — agent reply, info line, error message. */
+  text?: string;
+  /** Wall-clock duration for tool_call_result (ms). */
+  durationMs?: number;
+  ts: number;
+}
+
 export type ServerMessage =
   | TranscriptMessage
   | ThinkingMessage
@@ -113,4 +167,5 @@ export type ServerMessage =
   | ConnectionStatusMessage
   | CanvasUpdateMessage
   | ResultsMessage
-  | MflixCollectionsMessage;
+  | MflixCollectionsMessage
+  | TraceMessage;

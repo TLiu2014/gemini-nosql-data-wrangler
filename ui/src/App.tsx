@@ -1,23 +1,32 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
+import { Mic, MicOff, Plug, PlugZap } from "lucide-react";
 import { TransformationFlow } from "@/components/flow/TransformationFlow";
 import TopBar from "@/components/voice/TopBar";
-import Sidebar from "@/components/voice/Sidebar";
+import {
+  AgentChatPanel,
+  type ChatEntry,
+} from "@/components/chat/AgentChatPanel";
+import { useVoiceCapture } from "@/hooks/useVoiceCapture";
+import { useWebSpeech } from "@/hooks/useWebSpeech";
+import { useGeminiLiveTranscript } from "@/hooks/useGeminiLiveTranscript";
+import { isLikelyEnglish } from "@/lib/englishDetect";
+import { cn } from "@/lib/Utils";
+// DEPRECATED voice components — moved to `ui/deprecated/`.
+// import Sidebar from "@/components/voice/Sidebar";
+// import { useAudioCapture } from "@/hooks/useAudioCapture";
+// import { useAudioPlayback } from "@/hooks/useAudioPlayback";
+// import { useMicPermission } from "@/hooks/useMicPermission";
 import ResultsPanel from "@/components/results/ResultsPanel";
-import { useAudioCapture } from "@/hooks/useAudioCapture";
-import { useAudioPlayback } from "@/hooks/useAudioPlayback";
 import { useDragResize } from "@/hooks/useDragResize";
-import { useMicPermission } from "@/hooks/useMicPermission";
 import { useSettings } from "@/hooks/useSettings";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import {
   SAMPLE_MFLIX_DEMO_FLOW,
   SAMPLE_MFLIX_VECTOR_FLOW,
 } from "@/samples/sampleFlow";
-import type { ChatMessage } from "@/components/voice/ChatLog";
 import type { PipelineSchema } from "@/Schema";
 import type {
-  AgentState,
   ConnectionState,
   MflixCollectionsMessage,
   ResultsMessage,
@@ -32,45 +41,63 @@ const FLOW_PCT_MIN = 20;
 const FLOW_PCT_MAX = 85;
 const FLOW_PCT_DEFAULT = 60;
 
-const NON_ENGLISH_CLARIFICATION = "(non-English speech — English-only mode)";
-
 /**
- * Concatenate streaming transcript fragments. Gemini Live's transcription API
- * emits each fragment with its own leading whitespace marking word boundaries,
- * so we concat directly and collapse any accidental double-spaces.
+ * Sanity-fill an agent-supplied schema. The agent will sometimes call
+ * `update_canvas` with a partial payload — missing `pipeline` metadata,
+ * `layout`, or even `stages` — and the rest of the UI then crashes on
+ * unguarded access like `schema.pipeline.name`. Normalize once at the
+ * message boundary so downstream code can trust the shape.
  */
-function appendTranscriptChunk(existing: string, chunk: string): string {
-  if (!existing) return chunk.trimStart();
-  if (!chunk) return existing;
-  return (existing + chunk).replace(/ {2,}/g, " ");
+/** Treat any non-string as missing — protects React from rendering raw
+ *  objects when the agent ships a malformed payload. */
+function asString(v: unknown): string | undefined {
+  return typeof v === "string" ? v : undefined;
 }
 
-/**
- * Detect chunks that contain characters from a non-Latin script — Gemini's
- * ASR uses these when it thinks the user spoke another language, but also
- * occasionally as a misrecognition of background noise. In English-only mode
- * we hide these from the transcript entirely (user) or drop them (agent).
- *
- * The accept list covers ASCII, Latin-1 Supplement, Latin Extended A/B,
- * IPA, combining marks, and Latin Extended Additional — so accented English/
- * European letters and punctuation pass. Anything else (CJK, Cyrillic, Greek,
- * Hebrew, Arabic, Indic, Thai, Korean, emojis/supplementary planes via
- * surrogate pairs) fails. Punctuation-only fragments like ", " or "." are
- * legitimate streaming chunks and now pass — they used to be wrongly flagged.
- *
- * NOTE: Latin-script non-English (Spanish, French, German) cannot be detected
- * by script alone; the system instruction handles those at the model layer.
- *
- * Returns the chunk (trailing whitespace trimmed) when it's displayable, null
- * when it should be suppressed. Leading whitespace is preserved because the
- * transcription API uses it to mark word boundaries.
- */
-const NON_LATIN_RE = /[^\x00-\x7F\u00A0-\u036F\u1E00-\u1EFF]/;
-
-function displayableEnglishChunk(text: string): string | null {
-  if (!text || !text.trim()) return null;
-  if (NON_LATIN_RE.test(text)) return null;
-  return text.trimEnd();
+function normalizeAgentSchema(raw: unknown): PipelineSchema | null {
+  if (!raw || typeof raw !== "object") return null;
+  const s = raw as Partial<PipelineSchema>;
+  // Backfill `output` for any stage that's missing it AND coerce all
+  // identity fields to strings. The agent occasionally puts an object where
+  // a string belongs (e.g. `output: {}`), which crashes downstream
+  // renderers ("Objects are not valid as a React child").
+  const stages = Array.isArray(s.stages)
+    ? s.stages.map((stage, i) => {
+        const op = stage.operation as { collection?: string } | undefined;
+        const id = asString(stage.id) ?? `stage_${i + 1}`;
+        const name = asString(stage.name) ?? id;
+        const type = asString(stage.type) ?? "MQL_SOURCE";
+        const output =
+          asString(stage.output) ??
+          asString(op?.collection) ??
+          name ??
+          id;
+        return {
+          ...stage,
+          id,
+          name,
+          type: type as typeof stage.type,
+          output,
+        };
+      })
+    : [];
+  return {
+    version: "1.0",
+    pipeline: {
+      name: asString(s.pipeline?.name) ?? "pipeline",
+      createdAt: asString(s.pipeline?.createdAt) ?? new Date().toISOString(),
+      description: asString(s.pipeline?.description),
+    },
+    datasets:
+      s.datasets && typeof s.datasets === "object" && !Array.isArray(s.datasets)
+        ? s.datasets
+        : {},
+    stages,
+    layout: {
+      nodes: Array.isArray(s.layout?.nodes) ? s.layout!.nodes : [],
+      edges: Array.isArray(s.layout?.edges) ? s.layout!.edges : [],
+    },
+  };
 }
 
 export default function App() {
@@ -84,23 +111,42 @@ export default function App() {
         : null;
   const [schema, setSchema] = useState<PipelineSchema | null>(initialSchema);
   const [results, setResults] = useState<ResultsMessage[]>([]);
-  // Active tab id in the results panel. Owned here so a click on a canvas
-  // stage node's "view output" link can flip the panel to that stage's tab.
-  // Stage ids match between canvas (StageNode `id`) and results (`ResultsMessage.stageId`).
   const [activeResultsTab, setActiveResultsTab] = useState<string | null>(null);
-  // Live-fetched Mflix collections. `null` = no refresh attempted yet (the UI
-  // falls back to the static catalog); otherwise this is the most recent
-  // server reply (with either `collections` or `error`).
   const [mflixRefresh, setMflixRefresh] =
     useState<MflixCollectionsMessage | null>(null);
   const [mflixRefreshing, setMflixRefreshing] = useState(false);
-  const [chatLog, setChatLog] = useState<ChatMessage[]>([]);
-  const [agent, setAgent] = useState<AgentState>("idle");
-  const [agentDetail, setAgentDetail] = useState<string | undefined>(undefined);
   const [atlasConnection, setAtlasConnection] =
     useState<ConnectionState>("disconnected");
   const [atlasDetail, setAtlasDetail] = useState<string | undefined>(undefined);
+  // Separate from ws.state: ws.state goes "connected" the moment the WebSocket
+  // handshake completes, but the server still needs ~1-8 s to spawn MCP and
+  // build the AgentLoop. Voice capture must wait on `geminiConnection` to
+  // avoid sending audio before the agent is ready ("Agent isn't initialized…"
+  // trace errors).
+  const [geminiConnection, setGeminiConnection] =
+    useState<ConnectionState>("disconnected");
   const [geminiDetail, setGeminiDetail] = useState<string | undefined>(undefined);
+  // Transient confirmation surfaced in the sidebar after the user clicks Save
+  // in Settings. Auto-clears after 6s so it doesn't linger.
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
+  const saveNoticeTimerRef = useRef<number | null>(null);
+  const flashSaveNotice = useCallback((message: string) => {
+    setSaveNotice(message);
+    if (saveNoticeTimerRef.current != null) {
+      window.clearTimeout(saveNoticeTimerRef.current);
+    }
+    saveNoticeTimerRef.current = window.setTimeout(() => {
+      setSaveNotice(null);
+      saveNoticeTimerRef.current = null;
+    }, 6000);
+  }, []);
+  // Chat + trace timeline for the new agent panel. Each `user.text` send and
+  // each incoming `trace` event appends one entry. The agent is "busy" from
+  // the moment a user turn is dispatched until a `turn_complete` trace lands.
+  const [chatEntries, setChatEntries] = useState<ChatEntry[]>([]);
+  const [agentBusy, setAgentBusy] = useState(false);
+  const entryIdRef = useRef(0);
+  const nextEntryId = useCallback(() => `e-${++entryIdRef.current}`, []);
 
   // Layout — drag-to-resize for sidebar width and canvas/results split.
   const mainRef = useRef<HTMLDivElement>(null);
@@ -110,166 +156,35 @@ export default function App() {
     (e) =>
       Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, e.clientX)),
   );
-  const flowPct = useDragResize<number>(FLOW_PCT_DEFAULT, "y", (e) => {
+  // The canvas/results split has two flavors depending on `layoutMode`:
+  //   stacked → vertical drag (Y axis), canvas height %.
+  //   side-by-side → horizontal drag (X axis), canvas width %.
+  // We keep separate hook instances so each remembers its own drag position
+  // and the user can switch back and forth without losing their layout.
+  const flowPctStacked = useDragResize<number>(FLOW_PCT_DEFAULT, "y", (e) => {
     const rect = mainRef.current?.getBoundingClientRect();
     if (!rect) return FLOW_PCT_DEFAULT;
     const pct = ((e.clientY - rect.top) / rect.height) * 100;
     return Math.max(FLOW_PCT_MIN, Math.min(FLOW_PCT_MAX, pct));
   });
-
-  const audio = useAudioPlayback();
-  const mic = useMicPermission();
-
-  const sendRef = useRef<((data: string) => void) | null>(null);
-
-  const capture = useAudioCapture(
-    useCallback((base64) => {
-      sendRef.current?.(base64);
-    }, []),
-  );
+  const flowPctSideBySide = useDragResize<number>(50, "x", (e) => {
+    const rect = mainRef.current?.getBoundingClientRect();
+    if (!rect) return 50;
+    const pct = ((e.clientX - rect.left) / rect.width) * 100;
+    return Math.max(FLOW_PCT_MIN, Math.min(FLOW_PCT_MAX, pct));
+  });
 
   const handleMessage = useCallback(
     (msg: ServerMessage) => {
       switch (msg.type) {
+        // DEPRECATED Live API streams — silently ignored.
         case "audio":
-          audio.allowPlayback();
-          audio.playChunk(msg.data);
-          break;
         case "agent.status":
-          setAgent(msg.state);
-          setAgentDetail(msg.detail);
-          // Gemini's VAD reports the user barged in mid-response. Flush any
-          // queued audio chunks immediately so the user isn't still hearing
-          // the abandoned turn while they speak.
-          if (msg.detail === "interrupted") {
-            audio.interrupt();
-          }
-          // Turn complete (or error) → finalize the in-flight agent bubble so
-          // the next turn's thinking/transcript chunks start a fresh bubble
-          // instead of merging into the previous one.
-          if (msg.state === "idle" || msg.state === "error") {
-            setChatLog((prev) => {
-              const last = prev[prev.length - 1];
-              if (last && last.role === "agent" && !last.final) {
-                return [...prev.slice(0, -1), { ...last, final: true }];
-              }
-              return prev;
-            });
-          }
-          break;
-        case "transcript": {
-          // Preemptive barge-in: the moment Gemini transcribes user speech
-          // while the agent is mid-response, flush queued audio so the user
-          // doesn't keep hearing the old answer over their new question.
-          // Gemini's serverContent.interrupted usually follows but can lag
-          // a few hundred ms behind the first inputTranscription chunk.
-          if (msg.role === "user" && audio.isPlaying) {
-            audio.interrupt();
-          }
-
-          const appendChunk = (
-            prev: ChatMessage[],
-            display: string,
-          ): ChatMessage[] => {
-            const last = prev[prev.length - 1];
-            const sameRole = !!last && last.role === msg.role;
-            const inFlight = sameRole && !last.final;
-            const canAppendById =
-              !!msg.messageId && !!last?.messageId && msg.messageId === last.messageId;
-            // Adopt an in-flight bubble that has no messageId yet — this is
-            // the orphan a thinking-only chunk creates BEFORE the first
-            // transcript chunk arrives. Without this, thinking would land in
-            // a separate bubble from the spoken text for the same turn.
-            const canAdoptOrphan = inFlight && !last?.messageId;
-            // Legacy fallback for when the server doesn't stamp messageIds.
-            const legacyMatch = inFlight && !msg.messageId;
-
-            if (sameRole && (canAppendById || canAdoptOrphan || legacyMatch)) {
-              return [
-                ...prev.slice(0, -1),
-                {
-                  ...last!,
-                  text: appendTranscriptChunk(last!.text, display),
-                  messageId: msg.messageId ?? last!.messageId,
-                },
-              ];
-            }
-            return [
-              ...prev,
-              {
-                role: msg.role,
-                text: display.trimStart(),
-                messageId: msg.messageId,
-                ts: msg.ts,
-              },
-            ];
-          };
-
-          const raw = msg.text.trimEnd();
-          if (!raw.trim()) break;
-
-          // International mode: show every chunk verbatim.
-          if (settings.languageMode !== "english") {
-            setChatLog((prev) => appendChunk(prev, raw));
-            break;
-          }
-
-          // English-only mode.
-          const display = displayableEnglishChunk(raw);
-          if (display) {
-            setChatLog((prev) => appendChunk(prev, display));
-            break;
-          }
-
-          // Non-English chunk. Agent chunks are dropped silently — the server
-          // already suppresses the rest of the agent's turn anyway. User
-          // chunks surface as a single clarification bubble per utterance,
-          // keyed on messageId so the bubble doesn't get re-added for every
-          // chunk in the same run.
-          if (msg.role !== "user") break;
-          setChatLog((prev) => {
-            const last = prev[prev.length - 1];
-            const sameRun =
-              last &&
-              last.role === "user" &&
-              last.kind === "clarification" &&
-              ((msg.messageId && last.messageId === msg.messageId) ||
-                !msg.messageId);
-            if (sameRun) return prev;
-            return [
-              ...prev,
-              {
-                role: "user",
-                kind: "clarification",
-                text: NON_ENGLISH_CLARIFICATION,
-                final: true,
-                messageId: msg.messageId,
-                ts: msg.ts,
-              },
-            ];
-          });
-          break;
-        }
+        case "transcript":
         case "thinking":
-          // Append to the most recent agent bubble — but only if it's still
-          // in-flight (not finalized by a prior turn-complete). Otherwise
-          // start a fresh agent bubble so thinking attaches to the right turn.
-          setChatLog((prev) => {
-            const last = prev[prev.length - 1];
-            if (last && last.role === "agent" && !last.final) {
-              return [
-                ...prev.slice(0, -1),
-                { ...last, thinking: (last.thinking ?? "") + msg.text },
-              ];
-            }
-            return [
-              ...prev,
-              { role: "agent", text: "", thinking: msg.text, ts: msg.ts },
-            ];
-          });
           break;
         case "canvas.update":
-          setSchema(msg.schema as PipelineSchema);
+          setSchema(normalizeAgentSchema(msg.schema));
           break;
         case "results":
           setResults((prev) => {
@@ -292,13 +207,80 @@ export default function App() {
             setAtlasConnection(msg.state);
             setAtlasDetail(msg.detail);
           } else {
+            setGeminiConnection(msg.state);
             setGeminiDetail(msg.detail);
+          }
+          break;
+        }
+        case "trace": {
+          // Apply the english-only / international rule to incoming
+          // user_text traces (the server-side transcription of the user's
+          // voice). Mirrors the behavior the deprecated Live UI had:
+          //   - international mode: show transcription as-is.
+          //   - english mode: if the transcription doesn't look like
+          //     English, swap the bubble's text for a clarification line.
+          let inbound = msg;
+          if (
+            msg.kind === "user_text" &&
+            settings.languageMode === "english" &&
+            msg.text &&
+            !isLikelyEnglish(msg.text)
+          ) {
+            inbound = {
+              ...msg,
+              text: "(non-English speech — English-only mode)",
+            };
+          }
+
+          // Merge tool_call_start + tool_call_result into one entry so each
+          // tool call shows as a single evolving card (calling → result),
+          // not two stacked rows. When the result arrives, find the most
+          // recent matching `tool_call_start` entry and replace it with
+          // an updated trace that carries BOTH the original args and the
+          // returned payload.
+          if (msg.kind === "tool_call_result") {
+            setChatEntries((prev) => {
+              for (let i = prev.length - 1; i >= 0; i--) {
+                const e = prev[i];
+                if (
+                  e.kind === "trace" &&
+                  e.trace.kind === "tool_call_start" &&
+                  e.trace.label === msg.label
+                ) {
+                  const startArgs = e.trace.payload;
+                  const merged: ChatEntry = {
+                    ...e,
+                    trace: {
+                      ...msg,
+                      args: startArgs,
+                    },
+                  };
+                  const next = prev.slice();
+                  next[i] = merged;
+                  return next;
+                }
+              }
+              // No matching start found — fall back to append.
+              return [
+                ...prev,
+                { kind: "trace", trace: inbound, id: nextEntryId() },
+              ];
+            });
+            break;
+          }
+
+          setChatEntries((prev) => [
+            ...prev,
+            { kind: "trace", trace: inbound, id: nextEntryId() },
+          ]);
+          if (msg.kind === "turn_complete") {
+            setAgentBusy(false);
           }
           break;
         }
       }
     },
-    [audio, settings.languageMode],
+    [nextEntryId, settings.languageMode],
   );
 
   const ws = useWebSocket({
@@ -317,41 +299,94 @@ export default function App() {
     ),
   });
 
-  sendRef.current = useMemo(
-    () => (base64: string) => ws.send({ type: "audio", data: base64 }),
-    [ws],
-  );
-
-  const handleConnect = useCallback(async () => {
-    if (mic.state !== "granted") {
-      const ok = await mic.request();
-      if (!ok) return;
-    }
+  const handleConnect = useCallback(() => {
     ws.connect();
-  }, [ws, mic]);
+  }, [ws]);
 
   const handleDisconnect = useCallback(() => {
-    capture.stop();
-    audio.stop();
     ws.disconnect();
-    setAgent("idle");
-    setAgentDetail(undefined);
-  }, [ws, capture, audio]);
-
-  const handleToggleMic = useCallback(() => {
-    if (capture.micActive) capture.stop();
-    else void capture.start();
-  }, [capture]);
-
-  const handleInterrupt = useCallback(() => {
-    audio.interrupt();
-    ws.send({ type: "interrupt" });
-  }, [audio, ws]);
+  }, [ws]);
 
   const handleRefreshMflix = useCallback(() => {
     setMflixRefreshing(true);
     ws.send({ type: "mflix.refresh" });
   }, [ws]);
+
+  const handleSendText = useCallback(
+    (text: string) => {
+      setChatEntries((prev) => [
+        ...prev,
+        { kind: "user_text", text, ts: Date.now(), id: nextEntryId() },
+      ]);
+      setAgentBusy(true);
+      ws.send({ type: "user.text", text });
+    },
+    [ws, nextEntryId],
+  );
+
+  const handleSendAudio = useCallback(
+    (clip: { data: string; mimeType: string; durationMs: number }) => {
+      // No optimistic "voice 1.9s sent" pill — the server's transcription
+      // trace will land momentarily and render as the actual text bubble,
+      // following english-only / international rules.
+      setAgentBusy(true);
+      ws.send({
+        type: "user.audio",
+        mimeType: clip.mimeType,
+        data: clip.data,
+      });
+    },
+    [ws],
+  );
+
+  // Always-on voice capture with VAD-based utterance segmentation. When the
+  // user speaks, an utterance fires; we hand it off to the same audio-send
+  // path used by the push-to-talk button. Mic is auto-started on WS connect
+  // and torn down on disconnect.
+  const voice = useVoiceCapture({
+    onUtterance: handleSendAudio,
+  });
+
+  // Browser-side STT (Chrome/Edge/Safari). Runs in parallel with the audio
+  // capture above — when the recognizer finalizes an utterance, we push it
+  // into the timeline as a user_text trace. The audio still goes to Gemini
+  // through `voice` for the agent's reasoning; Web Speech is purely for the
+  // visible transcript.
+  const handleLocalTranscript = useCallback(
+    (text: string) => {
+      // Apply the English-only filter just like server-side transcripts.
+      const display =
+        settings.languageMode === "english" && !isLikelyEnglish(text)
+          ? "(non-English speech — English-only mode)"
+          : text;
+      setChatEntries((prev) => [
+        ...prev,
+        {
+          kind: "trace",
+          trace: {
+            type: "trace",
+            kind: "user_text",
+            text: display,
+            ts: Date.now(),
+          },
+          id: nextEntryId(),
+        },
+      ]);
+    },
+    [nextEntryId, settings.languageMode],
+  );
+  // Both hooks are always instantiated so React's hooks order stays stable;
+  // we route audio start/stop to whichever the user selected. Web Speech is
+  // free + zero-latency but quality varies; Gemini Live yields the same ASR
+  // engine that powers Google's audio products — typically much better.
+  const webSpeech = useWebSpeech({ onTranscript: handleLocalTranscript });
+  const liveTranscript = useGeminiLiveTranscript({
+    onTranscript: handleLocalTranscript,
+    getApiKey: useCallback(
+      () => settings.apiKey || undefined,
+      [settings.apiKey],
+    ),
+  });
 
   // Auto-connect on load when the user has opted in via Settings.
   const didAutoConnect = useRef(false);
@@ -359,103 +394,271 @@ export default function App() {
     if (didAutoConnect.current) return;
     if (!settings.autoConnect) return;
     didAutoConnect.current = true;
-    void handleConnect();
+    handleConnect();
   }, [settings.autoConnect, handleConnect]);
 
-  // When the Gemini session opens, optionally start the mic immediately.
-  const lastWsState = useRef<ConnectionState>(ws.state);
+  // When the WS drops, reset the server-driven gemini connection state too —
+  // otherwise a stale "connected" leaks across sessions.
+  const lastWsState = useRef(ws.state);
   useEffect(() => {
-    if (lastWsState.current !== "connected" && ws.state === "connected") {
-      if (!settings.startMicMuted && !capture.micActive && mic.state === "granted") {
-        void capture.start();
-      }
+    const prev = lastWsState.current;
+    if (prev === "connected" && ws.state !== "connected") {
+      setGeminiConnection("disconnected");
+      setGeminiDetail(undefined);
+      setAgentBusy(false);
     }
     lastWsState.current = ws.state;
-  }, [ws.state, settings.startMicMuted, capture, mic.state]);
+  }, [ws.state]);
 
-  // Note: do NOT auto-stop the mic when the agent errors. The server already
-  // drops audio chunks sent into a closed session, and keeping the mic on lets
-  // the user still see their own waveform — useful for diagnosing whether the
-  // problem is on the browser side (no mic input) vs the Gemini side (mic
-  // works, model rejected). The user can mute manually if they want.
+  // Pick the active transcription hook based on the user's setting. Both
+  // are instantiated above; this just selects which one to run. We expose a
+  // normalized `{ start, stop, isIdle, status, statusDetail }` shape so the
+  // effects + sidebar UI below don't care which underlying hook is active.
+  const activeTranscript = useMemo(() => {
+    if (settings.transcriptionMethod === "live") {
+      // Map liveTranscript.state → a 5-state status the StatusRow can render.
+      const status: ConnectionState =
+        liveTranscript.state === "listening"
+          ? "connected"
+          : liveTranscript.state === "connecting"
+            ? "connecting"
+            : liveTranscript.state === "error"
+              ? "error"
+              : "disconnected";
+      return {
+        start: () => liveTranscript.start(),
+        stop: () => liveTranscript.stop(),
+        isIdle: () => liveTranscript.state === "idle",
+        method: "live" as const,
+        status,
+        statusDetail: liveTranscript.errorDetail ?? undefined,
+      };
+    }
+    const status: ConnectionState = webSpeech.running
+      ? "connected"
+      : webSpeech.supported
+        ? "disconnected"
+        : "error";
+    return {
+      start: () => webSpeech.start(),
+      stop: () => webSpeech.stop(),
+      isIdle: () => !webSpeech.running,
+      method: "webspeech" as const,
+      status,
+      statusDetail: webSpeech.supported
+        ? undefined
+        : "Web Speech API not supported in this browser (try Chrome / Edge).",
+    };
+  }, [
+    settings.transcriptionMethod,
+    liveTranscript,
+    webSpeech,
+  ]);
 
-  // When the user changes `sampleFlow` while disconnected, swap the canvas
-  // to match — so the toggle feels responsive without waiting for a refresh.
-  // We only auto-replace if the canvas isn't currently being driven by an
-  // active Gemini session (otherwise the agent's in-flight edits would be
-  // wiped out by the new sample).
+  // Auto-start (or stop) the always-on mic when the AGENT is ready, not just
+  // when the WebSocket handshake completes. Otherwise utterances captured
+  // during MCP probe (~1-8 s) hit the server before `agent` is built and
+  // surface as "Agent isn't initialized yet" error traces.
+  const lastGeminiState = useRef(geminiConnection);
+  useEffect(() => {
+    const prev = lastGeminiState.current;
+    if (prev !== "connected" && geminiConnection === "connected") {
+      void voice.start();
+      void activeTranscript.start();
+    }
+    if (prev === "connected" && geminiConnection !== "connected") {
+      voice.stop();
+      activeTranscript.stop();
+    }
+    lastGeminiState.current = geminiConnection;
+  }, [geminiConnection, voice, activeTranscript]);
+
+  // Pause transcription when the user mutes (so it doesn't keep streaming
+  // room noise and feeding ghost messages into the trace).
+  useEffect(() => {
+    if (geminiConnection !== "connected") return;
+    if (voice.muted) {
+      activeTranscript.stop();
+    } else if (activeTranscript.isIdle()) {
+      void activeTranscript.start();
+    }
+  }, [voice.muted, geminiConnection, activeTranscript]);
+
+  // When the user flips transcription method, stop the previous hook and
+  // start the new one. Keeping both running would create duplicate trace
+  // entries for every utterance.
+  const lastTranscriptionMethod = useRef(settings.transcriptionMethod);
+  useEffect(() => {
+    if (lastTranscriptionMethod.current === settings.transcriptionMethod) return;
+    lastTranscriptionMethod.current = settings.transcriptionMethod;
+    if (geminiConnection !== "connected") return;
+    // Stop both, then start whichever is now active.
+    webSpeech.stop();
+    liveTranscript.stop();
+    void activeTranscript.start();
+  }, [
+    settings.transcriptionMethod,
+    geminiConnection,
+    webSpeech,
+    liveTranscript,
+    activeTranscript,
+  ]);
+
+  // When the user changes `sampleFlow` in Settings, swap the canvas (and
+  // clear any accumulated results) immediately.
   const lastAppliedSample = useRef(settings.sampleFlow);
   useEffect(() => {
     if (lastAppliedSample.current === settings.sampleFlow) return;
     lastAppliedSample.current = settings.sampleFlow;
-    if (ws.state === "connected") return;
     if (settings.sampleFlow === "data") setSchema(SAMPLE_MFLIX_DEMO_FLOW);
     else if (settings.sampleFlow === "vector") setSchema(SAMPLE_MFLIX_VECTOR_FLOW);
     else setSchema(null);
-  }, [settings.sampleFlow, ws.state]);
+    setResults([]);
+    setActiveResultsTab(null);
+  }, [settings.sampleFlow]);
 
-  // When the user flips Language mode while connected, cycle the Gemini
-  // session so the new system instruction + speechConfig take effect. The
-  // chat log on the UI side is preserved — only Gemini's session-side
-  // context is reset, which is fine since the canvas state is rehydrated
-  // into the new system instruction.
-  const lastLanguageMode = useRef(settings.languageMode);
-  useEffect(() => {
-    if (lastLanguageMode.current === settings.languageMode) return;
-    lastLanguageMode.current = settings.languageMode;
-    if (ws.state === "connected") {
-      // Drop a user-styled clarification bubble so the user sees why the
-      // session briefly hiccups. Marked final so subsequent transcripts
-      // start a fresh bubble.
-      setChatLog((prev) => [
-        ...prev,
-        {
-          role: "user",
-          kind: "clarification",
-          text: `(language mode changed to ${
-            settings.languageMode === "english"
-              ? "English only"
-              : "International"
-          } — reconnecting Gemini…)`,
-          final: true,
-          ts: Date.now(),
-        },
-      ]);
-      ws.disconnect();
-      // Briefly wait so the close handler runs before the new connect.
-      setTimeout(() => void handleConnect(), 200);
-    }
-  }, [settings.languageMode, ws, handleConnect]);
+  // Single consolidated status block — one bordered card containing both
+  // connection rows, the (rare) save notice, and the action buttons. Easier
+  // to scan than two stacked sections.
+  const isConnected = ws.state === "connected";
+  const isConnecting = ws.state === "connecting";
+  // Effective Gemini state: WS open but server hasn't finished spawning the
+  // agent yet → show "connecting" rather than "disconnected" so the user
+  // doesn't think nothing is happening during the ~1-8 s MCP probe.
+  const geminiEffective: ConnectionState =
+    ws.state === "connected" && geminiConnection !== "connected"
+      ? "connecting"
+      : geminiConnection;
+  // Flat single-section status bar at the top of the sidebar. No nested
+  // bordered boxes — the sidebar itself provides one border on the right;
+  // a single bottom border separates this from the chat panel below.
+  const StatusHeader = useMemo(
+    () => (
+      <div className="shrink-0 border-b border-slate-200 bg-white px-3 py-3 space-y-2">
+        {saveNotice && (
+          <div className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-[10.5px] leading-snug text-blue-700">
+            ✓ {saveNotice}
+          </div>
+        )}
+        <StatusRow
+          label="MongoDB Atlas"
+          state={atlasConnection}
+          detail={atlasDetail}
+        />
+        <StatusRow
+          label="Gemini"
+          state={geminiEffective}
+          detail={geminiEffective === "connected" ? geminiDetail : undefined}
+        />
+        <StatusRow
+          label={
+            activeTranscript.method === "live"
+              ? "Transcript (Live)"
+              : "Transcript (Web Speech)"
+          }
+          state={activeTranscript.status}
+          detail={activeTranscript.statusDetail}
+        />
+        <div className="flex min-w-0 gap-2 pt-1">
+          {isConnected ? (
+            <CtrlButton
+              onClick={handleDisconnect}
+              className="border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+              title="Disconnect from agent"
+            >
+              <Plug className="h-3.5 w-3.5" />
+              Disconnect
+            </CtrlButton>
+          ) : (
+            <CtrlButton
+              onClick={handleConnect}
+              disabled={isConnecting}
+              className="border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+              title="Connect to agent"
+            >
+              <PlugZap className="h-3.5 w-3.5" />
+              {isConnecting ? "Connecting…" : "Connect"}
+            </CtrlButton>
+          )}
+          <CtrlButton
+            onClick={() => voice.setMuted(!voice.muted)}
+            disabled={!isConnected || voice.state === "error"}
+            className={cn(
+              voice.muted
+                ? "border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100"
+                : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50",
+            )}
+            title={
+              voice.state === "error"
+                ? voice.errorDetail ?? "Microphone unavailable"
+                : voice.muted
+                  ? "Unmute mic"
+                  : "Mute mic"
+            }
+          >
+            {voice.muted ? (
+              <>
+                <MicOff className="h-3.5 w-3.5" /> Unmute
+              </>
+            ) : (
+              <>
+                <Mic className="h-3.5 w-3.5" /> Mute
+              </>
+            )}
+          </CtrlButton>
+        </div>
+      </div>
+    ),
+    [
+      atlasConnection,
+      atlasDetail,
+      geminiEffective,
+      geminiDetail,
+      saveNotice,
+      isConnected,
+      isConnecting,
+      handleConnect,
+      handleDisconnect,
+      voice.muted,
+      voice.state,
+      voice.errorDetail,
+      voice.setMuted,
+      activeTranscript.method,
+      activeTranscript.status,
+      activeTranscript.statusDetail,
+    ],
+  );
 
   return (
     <div className="flex h-screen w-screen flex-col bg-slate-50">
-      <TopBar settings={settings} onSettingsChange={updateSetting} />
+      <TopBar
+        settings={settings}
+        onSettingsChange={updateSetting}
+        onSaveNotice={flashSaveNotice}
+      />
 
       <div className="flex min-h-0 flex-1">
         <div
-          className="flex h-full min-w-0 shrink-0 overflow-hidden border-r border-slate-200"
+          className="flex h-full min-w-0 shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-white"
           style={{ width: sidebar.value }}
         >
-          <Sidebar
-            geminiConnection={ws.state}
-            geminiDetail={geminiDetail ?? agentDetail}
-            atlasConnection={atlasConnection}
-            atlasDetail={atlasDetail}
-            agent={agent}
-            micActive={capture.micActive}
-            micPermission={mic.state}
-            audioPaused={audio.paused}
-            agentSpeaking={audio.isPlaying}
-            micAnalyser={capture.analyser}
-            agentAnalyser={audio.analyser}
-            chatLog={chatLog}
-            onConnect={handleConnect}
-            onDisconnect={handleDisconnect}
-            onToggleMic={handleToggleMic}
-            onInterrupt={handleInterrupt}
-            onPauseAudio={audio.pause}
-            onResumeAudio={audio.resume}
-          />
+          {StatusHeader}
+          <div className="min-h-0 flex-1">
+            <AgentChatPanel
+              entries={chatEntries}
+              onSendText={handleSendText}
+              busy={agentBusy}
+              connected={ws.state === "connected"}
+              enableTextInput={settings.enableTextInput}
+              voice={{
+                state: voice.state,
+                muted: voice.muted,
+                setMuted: voice.setMuted,
+                errorDetail: voice.errorDetail,
+                analyser: voice.analyser,
+              }}
+            />
+          </div>
         </div>
 
         {/* Sidebar resize handle */}
@@ -464,59 +667,189 @@ export default function App() {
           onMouseDown={sidebar.onMouseDown}
         />
 
-        <main ref={mainRef} className="flex min-w-0 flex-1 flex-col">
-          <section
-            className="relative border-b border-slate-200 bg-white"
-            style={{ height: `${flowPct.value}%` }}
-          >
-            <ReactFlowProvider>
-              <TransformationFlow
-                schema={schema}
-                readOnly
-                configDisplayMode="popover"
-                onShowOutput={setActiveResultsTab}
-              />
-            </ReactFlowProvider>
-            {!schema && (
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                <div className="rounded-lg bg-white/80 px-6 py-4 text-center text-sm text-slate-500 ring-1 ring-slate-200 backdrop-blur">
-                  <div className="font-semibold text-slate-700">
-                    Canvas waiting for the agent
-                  </div>
-                  <div className="mt-1 text-xs">
-                    Connect and try saying:{" "}
-                    <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px]">
-                      "find movies about a heist gone wrong"
-                    </span>
+        {(() => {
+          const stacked = settings.layoutMode === "stacked";
+          const flowPct = stacked ? flowPctStacked : flowPctSideBySide;
+          const canvasSize: React.CSSProperties = stacked
+            ? { height: `${flowPct.value}%` }
+            : { width: `${flowPct.value}%` };
+          const resultsSize: React.CSSProperties = stacked
+            ? { height: `${100 - flowPct.value}%` }
+            : { width: `${100 - flowPct.value}%` };
+
+          const canvasSection = (
+            <section
+              className={cn(
+                "relative bg-white",
+                stacked ? "border-b border-slate-200" : "border-r border-slate-200",
+              )}
+              style={canvasSize}
+            >
+              <ReactFlowProvider>
+                <TransformationFlow
+                  schema={schema}
+                  readOnly
+                  configDisplayMode="popover"
+                  onShowOutput={setActiveResultsTab}
+                />
+              </ReactFlowProvider>
+              {!schema && (
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                  <div className="rounded-lg bg-white/80 px-6 py-4 text-center text-sm text-slate-500 ring-1 ring-slate-200 backdrop-blur">
+                    <div className="font-semibold text-slate-700">
+                      Canvas waiting for the agent
+                    </div>
+                    <div className="mt-1 text-xs">
+                      Connect and ask, e.g.:{" "}
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px]">
+                        "find movies about a heist gone wrong"
+                      </span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
-          </section>
+              )}
+            </section>
+          );
 
-          {/* Canvas / results resize handle */}
-          <div
-            className="h-1 shrink-0 cursor-row-resize bg-transparent transition-colors hover:bg-blue-400"
-            onMouseDown={flowPct.onMouseDown}
-          />
-
-          <section className="min-h-0 flex-1">
-            <ResultsPanel
-              schema={schema}
-              results={results}
-              showSchemaJson={settings.showSchemaJson}
-              showSampleData={settings.dataset === "mflix"}
-              showMflixCollections={settings.showMflixCollections}
-              mflixRefresh={mflixRefresh}
-              mflixRefreshing={mflixRefreshing}
-              onRefreshMflix={handleRefreshMflix}
-              atlasConnected={atlasConnection === "connected"}
-              activeTab={activeResultsTab}
-              onActiveTabChange={setActiveResultsTab}
+          const splitHandle = (
+            <div
+              className={cn(
+                "shrink-0 bg-transparent transition-colors hover:bg-blue-400",
+                stacked
+                  ? "h-1 cursor-row-resize"
+                  : "w-1 cursor-col-resize",
+              )}
+              onMouseDown={flowPct.onMouseDown}
             />
-          </section>
-        </main>
+          );
+
+          const resultsSection = (
+            <section className="min-h-0 min-w-0" style={resultsSize}>
+              <ResultsPanel
+                schema={schema}
+                results={results}
+                showSchemaJson={settings.showSchemaJson}
+                showMflixCollections={settings.showMflixCollections}
+                mflixRefresh={mflixRefresh}
+                mflixRefreshing={mflixRefreshing}
+                onRefreshMflix={handleRefreshMflix}
+                atlasConnected={atlasConnection === "connected"}
+                activeTab={activeResultsTab}
+                onActiveTabChange={setActiveResultsTab}
+                splitOrientation={stacked ? "horizontal" : "vertical"}
+              />
+            </section>
+          );
+
+          return (
+            <main
+              ref={mainRef}
+              className={cn(
+                "flex min-w-0 flex-1",
+                stacked ? "flex-col" : "flex-row",
+              )}
+            >
+              {canvasSection}
+              {splitHandle}
+              {resultsSection}
+            </main>
+          );
+        })()}
       </div>
     </div>
+  );
+}
+
+/* ───────────── Sidebar status helpers (match the pre-refactor look) ───────────── */
+
+function StatusDot({ state }: { state: ConnectionState }) {
+  const color =
+    state === "connected"
+      ? "bg-emerald-500"
+      : state === "connecting"
+        ? "bg-amber-400 animate-pulse"
+        : state === "error"
+          ? "bg-rose-500"
+          : "bg-slate-300";
+  return <span className={cn("h-2 w-2 rounded-full", color)} />;
+}
+
+function statusLabel(state: ConnectionState, detail?: string): string {
+  if (detail) return detail;
+  switch (state) {
+    case "connected":
+      return "Connected";
+    case "connecting":
+      return "Connecting…";
+    case "error":
+      return "Error";
+    default:
+      return "Disconnected";
+  }
+}
+
+function StatusRow({
+  label,
+  state,
+  detail,
+}: {
+  label: string;
+  state: ConnectionState;
+  detail?: string;
+}) {
+  const isError = state === "error";
+  return (
+    <div className="space-y-1 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <StatusDot state={state} />
+          <span className="font-medium text-slate-700">{label}</span>
+        </div>
+        <span
+          className={cn(
+            "truncate text-[11px]",
+            isError ? "text-rose-600" : "text-slate-500",
+          )}
+          title={detail}
+        >
+          {isError ? "Error" : statusLabel(state, detail)}
+        </span>
+      </div>
+      {isError && detail && (
+        <div className="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-[10.5px] leading-snug text-rose-700">
+          {detail}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CtrlButton({
+  onClick,
+  disabled,
+  title,
+  className,
+  children,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={cn(
+        "inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md border px-2.5 text-xs font-medium shadow-sm transition-colors",
+        "disabled:cursor-not-allowed disabled:opacity-50",
+        className,
+      )}
+    >
+      {children}
+    </button>
   );
 }

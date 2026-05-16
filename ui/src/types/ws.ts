@@ -10,6 +10,11 @@ import type { PipelineSchema } from "@/Schema";
 
 /* ───────────── Client → Server ───────────── */
 
+/** Gemini Live model identifiers the UI can select between. */
+export type GeminiModelChoice =
+  | "gemini-2.5-flash-native-audio-preview-09-2025"
+  | "gemini-3.1-flash-live-preview";
+
 export type ClientMessage =
   | {
       type: "init";
@@ -17,9 +22,19 @@ export type ClientMessage =
       mongoUri?: string;
       /** "english" (default) or "international" — see useSettings.ts for semantics. */
       languageMode?: "english" | "international";
+      /** Optional model override. Falls back to whatever the server is configured with. */
+      geminiModel?: GeminiModelChoice;
     }
-  | { type: "audio"; data: string } // base64-encoded Int16 PCM @ 16 kHz, mono
-  | { type: "interrupt" }
+  | { type: "audio"; data: string } // DEPRECATED — Live API streaming voice path
+  | { type: "interrupt" } // DEPRECATED
+  /** User typed a chat message. Server dispatches it to the ReAct agent loop. */
+  | { type: "user.text"; text: string }
+  /**
+   * Push-to-talk audio clip — base64-encoded blob from MediaRecorder.
+   * Sent as a single message after the user releases the mic button.
+   * Server forwards as an inline-data Part to Gemini (multimodal).
+   */
+  | { type: "user.audio"; mimeType: string; data: string }
   /** Ask the server to refresh the Mflix-collections reference panel from the
    *  live Atlas connection. Requires Atlas to be connected; otherwise the
    *  server replies with `{type: "mflix.collections", error}`. */
@@ -117,6 +132,31 @@ export interface MflixCollectionsMessage {
   error?: string;
 }
 
+/**
+ * Phase 2 trace event from the ReAct agent loop. The UI's trace panel
+ * renders these as a developer-style log.
+ */
+export interface TraceMessage {
+  type: "trace";
+  kind:
+    | "tool_call_start"
+    | "tool_call_result"
+    | "agent_text"
+    | "user_text"
+    | "turn_complete"
+    | "info"
+    | "error";
+  label?: string;
+  payload?: unknown;
+  /** UI-only: when a `tool_call_result` is merged with its earlier
+   *  `tool_call_start` into a single entry, this carries the start's args. */
+  args?: unknown;
+  isError?: boolean;
+  text?: string;
+  durationMs?: number;
+  ts: number;
+}
+
 /** Server-sent message types. */
 export type ServerMessage =
   | TranscriptMessage
@@ -126,4 +166,5 @@ export type ServerMessage =
   | ConnectionStatusMessage
   | CanvasUpdateMessage
   | ResultsMessage
-  | MflixCollectionsMessage;
+  | MflixCollectionsMessage
+  | TraceMessage;

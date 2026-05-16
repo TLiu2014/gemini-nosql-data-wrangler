@@ -76,6 +76,33 @@ export class ClientSocket {
     });
   }
 
+  sendTrace(args: {
+    kind:
+      | "tool_call_start"
+      | "tool_call_result"
+      | "agent_text"
+      | "user_text"
+      | "turn_complete"
+      | "info"
+      | "error";
+    label?: string;
+    payload?: unknown;
+    isError?: boolean;
+    text?: string;
+    durationMs?: number;
+  }): void {
+    this.send({
+      type: "trace",
+      kind: args.kind,
+      label: args.label,
+      payload: args.payload,
+      isError: args.isError,
+      text: args.text,
+      durationMs: args.durationMs,
+      ts: Date.now(),
+    });
+  }
+
   sendMflixCollections(args: {
     database: string;
     collections: Array<{

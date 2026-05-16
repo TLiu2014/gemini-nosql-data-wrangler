@@ -7,7 +7,11 @@ import { MongoMcpClient } from "./mcp/mongoClient.js";
 import { refreshMflixCollections } from "./mcp/mflixRefresh.js";
 import { resolveApiKey, resolveMongoUri } from "./auth/apiKey.js";
 import { ClientSocket } from "./websocket/clientSocket.js";
-import { GeminiStreamSession } from "./websocket/geminiStream.js";
+import { AgentLoop } from "./agent/agentLoop.js";
+// DEPRECATED: Live API streaming session. Replaced by the text-based ReAct
+// loop in Phase 2 (`agent/agentLoop.ts`). The original lives in
+// `server/deprecated/geminiStream.ts` for reference.
+// import { GeminiStreamSession } from "./websocket/geminiStream.js";
 import type { ClientMessage } from "./websocket/protocol.js";
 
 const env = loadEnv();
@@ -36,23 +40,19 @@ wss.on("connection", (ws: WsWebSocket) => {
   /**
    * Per-connection state. Each browser session gets its own:
    *   - MongoDB MCP subprocess (spawned only if a URI is resolved)
-   *   - Gemini Live session
+   *   - Agent loop (Phase 2 — currently inert)
    *
    * Both live for the duration of the WebSocket and are torn down on close.
    */
-  let session: GeminiStreamSession | null = null;
+  let agent: AgentLoop | null = null;
   let mcp: MongoMcpClient | null = null;
   let atlasDetail: string | undefined;
 
   console.log("[ws] client connected");
 
-  // Initial Atlas state: we don't know yet whether the user will pass a URI in
-  // `init`, so report "disconnected" until they do.
   client.sendConnectionStatus("disconnected", undefined, "atlas");
 
   async function startSession(msg: ClientMessage & { type: "init" }) {
-    if (session) return;
-
     // 1. Resolve credentials. The Gemini key is required; the Mongo URI is not.
     const apiKey = resolveApiKey(msg.apiKey, env.GEMINI_API_KEY);
     if ("error" in apiKey) {
@@ -68,14 +68,32 @@ wss.on("connection", (ws: WsWebSocket) => {
       mcp = new MongoMcpClient(mongo.uri);
       try {
         await mcp.connect();
-        atlasDetail = undefined;
-        client.sendConnectionStatus("connected", undefined, "atlas");
       } catch (err) {
         console.error("[ws] mcp.connect() failed:", err);
         atlasDetail = String(err);
         client.sendConnectionStatus("error", atlasDetail, "atlas");
         await mcp.close().catch(() => undefined);
         mcp = null;
+      }
+
+      if (mcp) {
+        client.sendConnectionStatus(
+          "connecting",
+          "Verifying MongoDB connection…",
+          "atlas",
+        );
+        const probe = await mcp.probe();
+        if (probe.ok) {
+          console.log("[mcp] MongoDB probe ok — Atlas reachable");
+          atlasDetail = undefined;
+          client.sendConnectionStatus("connected", undefined, "atlas");
+        } else {
+          console.error("[mcp] MongoDB probe failed:", probe.error);
+          atlasDetail = probe.error;
+          client.sendConnectionStatus("error", atlasDetail, "atlas");
+          await mcp.close().catch(() => undefined);
+          mcp = null;
+        }
       }
     } else if ("error" in mongo && mongo.error) {
       atlasDetail = mongo.error;
@@ -85,24 +103,41 @@ wss.on("connection", (ws: WsWebSocket) => {
       client.sendConnectionStatus("error", atlasDetail, "atlas");
     }
 
-    // 3. Bring up Gemini. Use a no-op MCP if Atlas is down so the agent still works.
-    const mcpForSession = mcp ?? new MongoMcpClient("mongodb://disabled");
-    try {
-      session = new GeminiStreamSession(
-        apiKey.key,
-        env.GEMINI_MODEL,
-        mcpForSession,
-        client,
-        atlasDetail,
-        msg.languageMode ?? "english",
-      );
-      await session.connect();
-    } catch (err) {
-      console.error("[ws] failed to start Gemini session:", err);
-      client.sendConnectionStatus("error", String(err), "gemini");
-      session = null;
-    }
+    // 3. Build the ReAct agent loop. Uses a no-op MCP so the agent still
+    // works (canvas updates only) when Atlas is disconnected.
+    const modelForSession = msg.geminiModel || env.GEMINI_MODEL;
+    const languageForSession = msg.languageMode ?? "english";
+    const mcpForAgent = mcp ?? new MongoMcpClient("mongodb://disabled");
+    agent = new AgentLoop({
+      apiKey: apiKey.key,
+      model: modelForSession,
+      mcp: mcpForAgent,
+      client,
+      languageMode: languageForSession,
+      atlasAvailable: !!mcp,
+      atlasDetail,
+    });
+    // Surface the model name + tool count to the UI so it can show them in
+    // the sidebar status bar. This replaces the noisy `session.ready` trace
+    // event we used to emit into the chat timeline.
+    const toolCount =
+      (mcp ? mcp.geminiFunctionDeclarations().length : 0) + /* custom */ 2;
+    client.sendConnectionStatus(
+      "connected",
+      `${modelForSession} · ${toolCount} tools`,
+      "gemini",
+    );
+    client.sendAgentStatus("idle");
   }
+
+  /* DEPRECATED — Live API auto-reconnect logic. Phase 2 (text ReAct loop)
+   * does not need this because individual sendMessage() calls fail-fast
+   * and don't keep an audio WS open between turns.
+   *
+   * const MAX_AUTO_RECONNECTS = 2;
+   * let autoReconnects = 0;
+   * async function buildGeminiSession(...) { ... }
+   */
 
   ws.on("message", async (raw) => {
     let msg: ClientMessage;
@@ -117,12 +152,36 @@ wss.on("connection", (ws: WsWebSocket) => {
       case "init":
         await startSession(msg);
         break;
+      // DEPRECATED — audio/interrupt are no-ops now.
       case "audio":
-        session?.sendAudio(msg.data);
-        break;
       case "interrupt":
-        // Browser stops local playback; Gemini Live VAD picks it up.
         break;
+      case "user.text": {
+        if (!agent) {
+          client.sendTrace({
+            kind: "error",
+            text: "Agent isn't initialized yet — send `init` first.",
+            isError: true,
+          });
+          break;
+        }
+        void agent.sendUserMessage(msg.text);
+        break;
+      }
+      case "user.audio": {
+        if (!agent) {
+          client.sendTrace({
+            kind: "error",
+            text: "Agent isn't initialized yet — send `init` first.",
+            isError: true,
+          });
+          break;
+        }
+        void agent.sendUserMessage({
+          audio: { mimeType: msg.mimeType, data: msg.data },
+        });
+        break;
+      }
       case "mflix.refresh": {
         const database = msg.database ?? "sample_mflix";
         if (!mcp || !mcp.isConnected()) {
@@ -152,8 +211,7 @@ wss.on("connection", (ws: WsWebSocket) => {
 
   ws.on("close", async () => {
     console.log("[ws] client disconnected");
-    session?.disconnect();
-    session = null;
+    agent = null;
     if (mcp) {
       await mcp.close().catch(() => undefined);
       mcp = null;

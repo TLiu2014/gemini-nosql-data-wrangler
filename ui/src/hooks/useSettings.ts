@@ -19,22 +19,41 @@ export interface Settings {
    *   "none"   — empty canvas.
    */
   sampleFlow: "data" | "vector" | "none";
-  /** "mflix" = use the loaded sample_mflix dataset; "upload" = user JSON (not yet wired). */
-  dataset: "mflix" | "upload";
-  /** Show the "Pipeline Schema" tab in the results panel. Off by default — most users care about rows. */
+  /** Show the "Pipeline Schema" tab in the results panel. */
   showSchemaJson: boolean;
-  /** Show the "Mflix collections" reference tab in the results panel. Lets the presenter
-   *  point at what's in sample_mflix without needing a live Atlas connection. */
+  /** Show the "Mflix collections" reference tab in the results panel. */
   showMflixCollections: boolean;
   /**
-   * "english" = strict English-only (default, recommended for demos): the agent
-   *             is instructed to respond in English even if the user appears
-   *             to speak another language, and the UI filters non-Latin
-   *             transcript fragments as background-noise mistranscriptions.
-   * "international" = no language enforcement: the agent responds in whatever
-   *             language the user speaks; the UI shows all transcripts as-is.
+   * Show the text-message input box below the chat timeline as a fallback
+   * for noisy environments. Off by default — the primary UX is voice via
+   * the always-on mic.
+   */
+  enableTextInput: boolean;
+  /**
+   * "english" = strict English-only (default, recommended for demos).
+   * "international" = no language enforcement; agent mirrors whatever the
+   * user speaks.
    */
   languageMode: "english" | "international";
+  /**
+   * Main content layout.
+   *   "stacked"       — canvas on top, results on bottom (default). Inside the
+   *                     results, DocumentsSplitView is horizontal (table left,
+   *                     JSON right).
+   *   "side-by-side"  — canvas on the left, results on the right. Inside the
+   *                     results, DocumentsSplitView flips to vertical
+   *                     (table on top, JSON below).
+   */
+  layoutMode: "stacked" | "side-by-side";
+  /**
+   * Source for the user's visible transcript in the trace panel.
+   *   "webspeech" — browser-native SpeechRecognition. Free, no API calls,
+   *                 but quality varies and Firefox isn't supported.
+   *   "live"      — dedicated Gemini Live API session (TEXT-only modality)
+   *                 dedicated to streaming transcripts. Uses one extra
+   *                 audio path per turn.
+   */
+  transcriptionMethod: "webspeech" | "live";
 }
 
 const STORAGE_KEY = "gemini-nosql-wrangler:settings";
@@ -44,11 +63,13 @@ const DEFAULT_SETTINGS: Settings = {
   mongoUri: "",
   autoConnect: false,
   startMicMuted: false,
-  sampleFlow: "data",
-  dataset: "mflix",
+  sampleFlow: "none",
   showSchemaJson: false,
-  showMflixCollections: false,
+  showMflixCollections: true,
+  enableTextInput: false,
   languageMode: "english",
+  layoutMode: "side-by-side",
+  transcriptionMethod: "live",
 };
 
 function load(): Settings {

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/Utils";
+import type { AgentState } from "@/types/ws";
 
 export interface ChatMessage {
   role: "user" | "agent";
@@ -18,14 +20,23 @@ export interface ChatMessage {
 
 interface ChatLogProps {
   messages: ChatMessage[];
+  /** Current agent state. Drives the "working…" footer indicator below the
+   *  last bubble so the user can tell when the agent is busy with a tool. */
+  agentState?: AgentState;
+  /** Optional human-readable detail for the indicator (e.g. "calling aggregate"). */
+  agentDetail?: string;
 }
 
-export default function ChatLog({ messages }: ChatLogProps) {
+export default function ChatLog({
+  messages,
+  agentState,
+  agentDetail,
+}: ChatLogProps) {
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, agentState]);
 
   if (messages.length === 0) {
     return (
@@ -41,11 +52,24 @@ export default function ChatLog({ messages }: ChatLogProps) {
     );
   }
 
+  const busyLabel =
+    agentState === "tool-call"
+      ? agentDetail || "running tool"
+      : agentState === "thinking"
+        ? "thinking"
+        : null;
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 overflow-y-auto p-3">
       {messages.map((msg, i) => (
         <ChatBubble key={msg.messageId ?? `${msg.role}-${msg.ts}-${i}`} msg={msg} />
       ))}
+      {busyLabel && (
+        <div className="flex items-center gap-2 self-start rounded-full bg-slate-100 px-2 py-1 text-[11px] italic text-slate-600">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          {busyLabel}…
+        </div>
+      )}
       <div ref={endRef} />
     </div>
   );

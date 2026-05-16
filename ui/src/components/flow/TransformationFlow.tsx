@@ -112,7 +112,7 @@ export const TransformationFlow = forwardRef<
   // Refs always hold the latest render values — safe to use in callbacks.
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
-  const pipelineNameRef = useRef(schema?.pipeline.name ?? "pipeline");
+  const pipelineNameRef = useRef(schema?.pipeline?.name ?? "pipeline");
   nodesRef.current = nodes;
   edgesRef.current = edges;
 
@@ -122,11 +122,21 @@ export const TransformationFlow = forwardRef<
 
   const rf = useReactFlow();
 
-  // Load (or reload) from the schema prop — only when it's a genuinely new
-  // schema from outside, not one we emitted ourselves.
+  // Load (or reload) from the schema prop. `schema === null` is a meaningful
+  // signal from the host ("clear the canvas"), so we don't early-return on
+  // it — we clear our internal node/edge state instead. We DO skip when the
+  // incoming schema is the same reference we just emitted, to avoid the
+  // round-trip from our own onChange wiping out in-flight edits.
   useEffect(() => {
-    if (!schema) return;
-    if (schema === lastEmitted.current) return;
+    if (schema === lastEmitted.current && schema !== null) return;
+    if (!schema) {
+      pipelineNameRef.current = "pipeline";
+      setNodes([]);
+      setEdges([]);
+      setSelectedNodeId(null);
+      setEditingNodeId(null);
+      return;
+    }
     const { name, nodes: newNodes, edges: newEdges } = deserializePipeline(schema);
     pipelineNameRef.current = name;
     setNodes(newNodes);

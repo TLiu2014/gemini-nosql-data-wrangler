@@ -14,8 +14,79 @@ import {
   isCustomToolName,
 } from "../agent/customTools.js";
 import { buildSystemInstruction } from "../agent/systemInstruction.js";
+import { isLikelyEnglish } from "../lib/englishDetect.js";
 import type { ClientSocket } from "./clientSocket.js";
 import type { LanguageMode } from "./protocol.js";
+
+/**
+ * Cap for the cleaned text we forward to Gemini Live. The Live API rejects
+ * oversized function responses with WS 1007 — 32 KB sits comfortably under
+ * the limit. We let MCP return whatever it wants (so a full 20-row sample
+ * comes back), then post-process: strip vector fields, then truncate if
+ * the result is still too large.
+ */
+const GEMINI_TOOL_RESPONSE_BYTE_BUDGET = 32 * 1024;
+
+/**
+ * Fields we strip from MCP textual content before forwarding to Gemini.
+ * These are typically multi-KB binary/vector payloads that the model
+ * doesn't need and that routinely push responses over the per-message
+ * size cap.
+ */
+const HEAVY_FIELD_NAMES = [
+  "plot_embedding",
+  "embedding",
+  "vector",
+  "queryVector",
+];
+
+/**
+ * Strip vector/embedding fields from MCP textual content and (if still too
+ * large) truncate so the final payload fits Gemini Live's tool-response
+ * budget. We DO NOT pre-cap MCP itself: a 32 KB cap there meant MCP only
+ * returned 1 of 20 docs, because each `embedded_movies` doc with its
+ * 1536-float `plot_embedding` is ~30 KB raw. Letting MCP return everything
+ * and stripping the heavy fields afterwards keeps the row count intact.
+ */
+function stripHeavyFieldsFromMcpResult(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const r = raw as { content?: Array<{ type?: string; text?: string }> };
+  if (!Array.isArray(r.content)) return raw;
+  const newContent = r.content.map((c) => {
+    if (c?.type !== "text" || typeof c.text !== "string") return c;
+    let stripped = stripHeavyFieldsFromText(c.text);
+    if (stripped.length > GEMINI_TOOL_RESPONSE_BYTE_BUDGET) {
+      stripped =
+        stripped.slice(0, GEMINI_TOOL_RESPONSE_BYTE_BUDGET) +
+        `\n…[truncated to fit Gemini's tool-response budget; ${stripped.length - GEMINI_TOOL_RESPONSE_BYTE_BUDGET} more bytes elided]`;
+    }
+    return stripped === c.text ? c : { ...c, text: stripped };
+  });
+  return { ...raw, content: newContent };
+}
+
+function stripHeavyFieldsFromText(text: string): string {
+  // Most MCP `aggregate`/`find` responses include free-form prose plus one or
+  // more JSON objects/arrays. We don't try to parse the whole thing — instead
+  // we walk through and elide the value of any `"<heavy>": ...` occurrences.
+  // The regex handles both `[…floats…]` (vector arrays) and `{…binData…}`
+  // (the BSON-stringified vector form).
+  let out = text;
+  for (const field of HEAVY_FIELD_NAMES) {
+    const arrayForm = new RegExp(
+      `"${field}"\\s*:\\s*\\[[^\\]]*\\]`,
+      "g",
+    );
+    const objForm = new RegExp(
+      `"${field}"\\s*:\\s*\\{[^{}]*\\}`,
+      "g",
+    );
+    out = out
+      .replace(arrayForm, `"${field}":"<elided ${field}>"`)
+      .replace(objForm, `"${field}":"<elided ${field}>"`);
+  }
+  return out;
+}
 
 /**
  * Per-browser-connection Gemini Live ReAct loop.
@@ -48,18 +119,6 @@ export class GeminiStreamSession {
    */
   private suppressCurrentAgentTurn = false;
   private static readonly USER_CHUNK_GAP_MS = 1400;
-  /**
-   * Matches any character OUTSIDE the Latin-script allow-list:
-   *   - ASCII (\x00-\x7F)
-   *   - Latin-1 Supplement + Latin Extended-A + Latin Extended-B
-   *   - IPA, spacing modifiers, combining diacriticals (\u00A0-\u036F)
-   *   - Latin Extended Additional (\u1E00-\u1EFF)
-   * Everything else — CJK, Cyrillic, Greek, Hebrew, Arabic, Indic, Thai,
-   * Korean, emojis (via surrogate pair high-byte) — is treated as non-Latin.
-   * Kept in sync with the UI-side `NON_LATIN_RE` in App.tsx.
-   */
-  private static readonly NON_LATIN_RE =
-    /[^\x00-\x7F\u00A0-\u036F\u1E00-\u1EFF]/;
 
   constructor(
     apiKey: string,
@@ -68,6 +127,13 @@ export class GeminiStreamSession {
     private readonly client: ClientSocket,
     private readonly atlasDetail: string | undefined,
     private readonly languageMode: LanguageMode = "english",
+    /**
+     * Invoked when Gemini Live drops the WS with code 1011 AFTER audio has
+     * flowed in either direction — the typical Google-side transient. The
+     * host (`index.ts`) handles this by recreating the session with the same
+     * config so the user can keep talking.
+     */
+    private readonly onMidStreamDrop?: () => void,
   ) {
     this.ai = new GoogleGenAI({ apiKey });
   }
@@ -105,6 +171,11 @@ export class GeminiStreamSession {
     // languageCode so Gemini's multilingual TTS can mirror the user's language.
     const speechConfig =
       this.languageMode === "english" ? { languageCode: "en-US" } : {};
+
+    // Note: `inputAudioTranscription.languageCodes` would bias the ASR to
+    // English at the source, but it's only available on the Vertex/Enterprise
+    // path — the AI Studio Developer API rejects it. We fall back to the
+    // downstream `isLikelyEnglish` filter for stragglers.
 
     this.session = await this.ai.live.connect({
       model: this.model,
@@ -157,19 +228,44 @@ export class GeminiStreamSession {
           const code = (ev as { code?: number })?.code;
           const reason = (ev as { reason?: string })?.reason;
           console.log("[gemini] Live session closed:", code, reason);
+          // Distinguish setup-time 1011 (payload invalid, fatal) from
+          // mid-stream 1011 (Google-side transient, recoverable).
+          let isMidStream1011 = false;
           if (code === 1011) {
-            console.error(
-              "[gemini] 1011 internal error usually means the function declarations payload is invalid. " +
-                "Inspect the most recent 'opening Live session' log line. Common causes: " +
-                "(a) too many tools, (b) JSON Schema keywords Gemini doesn't accept, " +
-                "(c) tool names violating the [a-zA-Z0-9_-]{1,64} pattern, " +
-                "(d) system instruction too large.",
-            );
+            if (this.outboundAudioChunks > 0 || this.inboundAudioChunks > 0) {
+              isMidStream1011 = true;
+              console.error(
+                "[gemini] 1011 mid-stream — session opened and exchanged audio " +
+                  `(in=${this.inboundAudioChunks}, out=${this.outboundAudioChunks}) ` +
+                  "before Gemini dropped it. Will attempt one auto-reconnect.",
+              );
+            } else {
+              console.error(
+                "[gemini] 1011 at setup — function declarations payload likely invalid. " +
+                  "Inspect the most recent 'opening Live session' log line. Common causes: " +
+                  "(a) too many tools, (b) JSON Schema keywords Gemini doesn't accept, " +
+                  "(c) tool names violating the [a-zA-Z0-9_-]{1,64} pattern, " +
+                  "(d) system instruction too large.",
+              );
+            }
           }
+          this.sessionClosed = true;
+
+          // Mid-stream 1011: hand off to the host for a transparent restart.
+          // Don't surface this as an error to the UI — the host will send a
+          // "connecting…" status of its own.
+          if (isMidStream1011 && this.onMidStreamDrop) {
+            try {
+              this.onMidStreamDrop();
+            } catch (err) {
+              console.error("[gemini] onMidStreamDrop callback threw:", err);
+            }
+            return;
+          }
+
           // 1000 = normal closure. Anything else (1006 transport drop, 1008
           // policy violation like an unknown model, etc.) is an error the user
           // should see in the UI rather than as a silent "disconnected" state.
-          this.sessionClosed = true;
           if (code && code !== 1000) {
             this.client.sendConnectionStatus(
               "error",
@@ -202,8 +298,11 @@ export class GeminiStreamSession {
       console.log(`[gemini] inbound audio chunks: ${this.inboundAudioChunks}`);
     }
     try {
+      // Use `audio:` rather than the legacy `media:` field. Newer Live models
+      // (gemini-3.x-flash-live-preview) reject the deprecated `media_chunks`
+      // wire format with WS 1007. `audio:` works for both 2.5 and 3.x.
       this.session.sendRealtimeInput({
-        media: { mimeType: "audio/pcm;rate=16000", data: base64Pcm16k },
+        audio: { mimeType: "audio/pcm;rate=16000", data: base64Pcm16k },
       });
     } catch (err) {
       // Session may have been closed between our check and the send.
@@ -227,10 +326,16 @@ export class GeminiStreamSession {
     const sc = msg.serverContent;
     const now = Date.now();
 
-    const englishOnly = this.languageMode === "english";
-
     // 1. User speech transcription. Forward each delta and stamp a messageId
     // so the UI can keep one utterance in one bubble.
+    //
+    // We used to force-suppress the agent's reply when the input looked
+    // non-English (via `isLikelyEnglish`), but that had a high false-positive
+    // rate on short English utterances — the agent would speak, we'd drop
+    // its audio, and the user would hear nothing or hear stale audio carry
+    // over to the next turn. The LANGUAGE_RULE in the system instruction
+    // already tells the model to say "I didn't catch that" naturally for
+    // unclear speech, so we trust the model. The UI still filters cosmetically.
     if (sc?.inputTranscription?.text) {
       if (
         !this.currentUserMessageId ||
@@ -239,23 +344,6 @@ export class GeminiStreamSession {
         this.currentUserMessageId = `u-${++this.userMessageSeq}`;
       }
       this.lastUserChunkAt = now;
-
-      // English-only mode: any non-Latin character in the user's transcription
-      // (Gemini's ASR heard a non-English language) locks this whole turn into
-      // suppression — agent transcript, audio, and thinking will all be
-      // dropped until turnComplete. The UI also independently shows a
-      // clarification bubble in place of the raw non-English text.
-      if (
-        englishOnly &&
-        GeminiStreamSession.NON_LATIN_RE.test(sc.inputTranscription.text)
-      ) {
-        if (!this.suppressCurrentAgentTurn) {
-          console.log(
-            "[gemini] non-English input detected — suppressing agent reply for this turn",
-          );
-        }
-        this.suppressCurrentAgentTurn = true;
-      }
 
       this.client.sendTranscript({
         role: "user",
@@ -298,6 +386,8 @@ export class GeminiStreamSession {
         this.outboundAudioChunks++;
         if (this.outboundAudioChunks === 1) {
           console.log("[gemini] first outbound audio chunk to browser");
+        } else if (this.outboundAudioChunks % 100 === 0) {
+          console.log(`[gemini] outbound audio chunks: ${this.outboundAudioChunks}`);
         }
         this.client.sendAgentAudio(part.inlineData.data);
         continue;
@@ -311,6 +401,9 @@ export class GeminiStreamSession {
 
     // 4. Turn boundary — drop status back to idle, clear suppression.
     if (sc?.turnComplete || sc?.generationComplete) {
+      console.log(
+        `[gemini] turn boundary (${sc.turnComplete ? "turnComplete" : "generationComplete"}) — outbound=${this.outboundAudioChunks}, inbound=${this.inboundAudioChunks}`,
+      );
       this.agentTurnInFlight = false;
       this.currentAgentMessageId = null;
       this.currentUserMessageId = null;
@@ -320,6 +413,7 @@ export class GeminiStreamSession {
 
     // 5. Interruption — the model is yielding the turn back to the user.
     if (sc?.interrupted) {
+      console.log("[gemini] interrupted by user VAD");
       this.agentTurnInFlight = false;
       this.currentAgentMessageId = null;
       this.currentUserMessageId = null;
@@ -367,7 +461,35 @@ export class GeminiStreamSession {
               },
             });
           } else {
-            const result = await this.mcp.callTool(name, args);
+            const argsPreview = (() => {
+              try {
+                const s = JSON.stringify(args);
+                return s.length > 400 ? s.slice(0, 400) + "…(truncated)" : s;
+              } catch {
+                return "<unserializable>";
+              }
+            })();
+            console.log(`[mcp] → ${name} args=${argsPreview}`);
+            const startedAt = Date.now();
+            const rawResult = await this.mcp.callTool(name, args);
+            const ms = Date.now() - startedAt;
+            // MCP can return multi-hundred-KB blobs for vector-bearing
+            // collections. Strip vectors, then truncate to fit Gemini's
+            // tool-response budget. Done after the call so MCP doesn't
+            // pre-cap row count.
+            const result = stripHeavyFieldsFromMcpResult(rawResult);
+            const resultPreview = (() => {
+              try {
+                const s = JSON.stringify(result);
+                return s.length > 400 ? s.slice(0, 400) + "…(truncated)" : s;
+              } catch {
+                return "<unserializable>";
+              }
+            })();
+            const isError = !!(result as { isError?: boolean })?.isError;
+            console.log(
+              `[mcp] ← ${name} ${isError ? "ERROR" : "ok"} in ${ms}ms result=${resultPreview}`,
+            );
             responses.push({
               id: call.id,
               name,
@@ -403,7 +525,28 @@ export class GeminiStreamSession {
   ): Record<string, unknown> {
     if (name === CUSTOM_TOOL_NAMES.update_canvas) {
       const schema = args.schema;
+      // Log enough to see whether the agent passed a real pipeline or a
+      // half-empty placeholder. Truncated to keep the log readable.
+      const preview = (() => {
+        try {
+          const s = JSON.stringify(schema);
+          return s.length > 600 ? s.slice(0, 600) + "…(truncated)" : s;
+        } catch {
+          return String(schema);
+        }
+      })();
+      const stageCount = Array.isArray(
+        (schema as { stages?: unknown[] } | undefined)?.stages,
+      )
+        ? ((schema as { stages: unknown[] }).stages.length)
+        : 0;
+      console.log(
+        `[tool] update_canvas — stages=${stageCount}, payload=${preview}`,
+      );
       if (!schema || typeof schema !== "object") {
+        console.warn(
+          `[tool] update_canvas REJECTED — schema is not an object. args keys: ${Object.keys(args).join(", ")}`,
+        );
         return { error: "update_canvas requires a `schema` object" };
       }
       this.client.sendCanvasUpdate(schema);
@@ -412,7 +555,13 @@ export class GeminiStreamSession {
     if (name === CUSTOM_TOOL_NAMES.push_results) {
       const stageId = typeof args.stageId === "string" ? args.stageId : null;
       const rows = Array.isArray(args.rows) ? args.rows : null;
+      console.log(
+        `[tool] push_results — stageId=${stageId}, rowCount=${rows?.length ?? "n/a"}`,
+      );
       if (!stageId || !rows) {
+        console.warn(
+          `[tool] push_results REJECTED — args keys: ${Object.keys(args).join(", ")}, stageId type=${typeof args.stageId}, rows is array=${Array.isArray(args.rows)}`,
+        );
         return { error: "push_results requires `stageId` (string) and `rows` (array)" };
       }
       this.client.sendResults({
@@ -436,9 +585,13 @@ export class GeminiStreamSession {
     const chunk = text.trimEnd();
     if (!chunk.trim()) return null;
     if (this.languageMode !== "english") return chunk;
-    // English-only mode: suppress non-Latin agent transcript chunks so the UI
-    // doesn't show cross-language bleed-through.
-    if (GeminiStreamSession.NON_LATIN_RE.test(chunk)) return null;
+    // English-only mode: suppress chunks where the agent slipped into
+    // another language (script-level or Latin-script romance/asian-language
+    // mis-utterance), so the UI doesn't show cross-language bleed-through.
+    // Pure-punctuation streaming deltas (", ", "…") carry no signal — let
+    // them through.
+    if (!/[A-Za-z]/.test(chunk)) return chunk;
+    if (!isLikelyEnglish(chunk)) return null;
     return chunk;
   }
 }
