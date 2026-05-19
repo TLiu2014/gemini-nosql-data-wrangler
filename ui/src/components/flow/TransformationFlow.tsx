@@ -403,6 +403,8 @@ export const TransformationFlow = forwardRef<
       <NodeToolbarPositionProvider value={popoverPosition}>
         <div className="flex h-full min-h-[480px]">
           <div className="relative min-w-0 flex-1">
+            {/* Edit / View-only toggle commented out — this project keeps the
+                canvas read-only (the agent is the only thing that edits it).
             <div className="pointer-events-none absolute left-2 top-2 z-20">
               <button
                 type="button"
@@ -427,6 +429,7 @@ export const TransformationFlow = forwardRef<
                 )}
               </button>
             </div>
+            */}
             {!isReadOnly && (
               <div className="pointer-events-none absolute left-2 top-12 z-20 flex max-w-[min(100%-1rem,18rem)] flex-col gap-1">
                 <FlowCanvasToolbar

@@ -23,12 +23,14 @@ export interface Settings {
   showSchemaJson: boolean;
   /** Show the "Mflix collections" reference tab in the results panel. */
   showMflixCollections: boolean;
-  /**
-   * Show the text-message input box below the chat timeline as a fallback
-   * for noisy environments. Off by default — the primary UX is voice via
-   * the always-on mic.
-   */
+  /** Show the text-message input box below the chat timeline. */
   enableTextInput: boolean;
+  /**
+   * Show voice/audio features (mic, visualizer, mute button, transcript
+   * status row, transcription pipeline). When off, the agent is purely
+   * text-driven and the sidebar's audio chrome is hidden.
+   */
+  enableVoiceMode: boolean;
   /**
    * "english" = strict English-only (default, recommended for demos).
    * "international" = no language enforcement; agent mirrors whatever the
@@ -66,7 +68,8 @@ const DEFAULT_SETTINGS: Settings = {
   sampleFlow: "none",
   showSchemaJson: false,
   showMflixCollections: true,
-  enableTextInput: false,
+  enableTextInput: true,
+  enableVoiceMode: false,
   languageMode: "english",
   layoutMode: "side-by-side",
   transcriptionMethod: "live",

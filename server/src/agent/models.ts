@@ -26,15 +26,16 @@
 // inlineData) is supported by the standard generateContent path on most
 // Gemini 2.5 / 3.x models.
 //
-// As of Gemini API docs (May 2026), the active line below is the most
-// reliable free-tier-friendly model that supports audio inline data
-// for generateContent. Flip the active line if you hit a 503/429 on the
-// current one — keep them all here so it's a one-line swap.
-export const DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite";
+// Now that input is text-first (audio is opt-in), we use the strongest 3.1
+// model available — flash-lite was reasoning-light and skipped tool-call
+// steps. Pro is much more reliable for the ReAct loop but has tighter
+// free-tier rate limits (~5 RPM on AI Studio). If you hit 429s, flip to one
+// of the alternates below — they're verified-real model IDs.
+export const DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview";
 
 // Alternates (verified-real model IDs):
-// export const DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview";   // hit 503 (high demand) under free tier
-// export const DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview";   // Pro tier — much tighter free-tier rate limits; expect 429 under sustained use
+// export const DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite";   // smallest, fastest, weaker tool reasoning
+// export const DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview";   // hit 503 (high demand) under free tier earlier
 // export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";          // stable GA fallback
 
 // HOLD: separate transcription model. Tried `gemini-3-flash-preview` for

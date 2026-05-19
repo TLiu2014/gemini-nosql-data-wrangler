@@ -12,6 +12,10 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // Local dev should land directly on the workspace, skipping the
+    // marketing landing page. Browser the user opens via npm run dev will
+    // jump straight to /app; navigating to / still serves the landing.
+    open: "/app",
     proxy: {
       "/ws": { target: "http://localhost:8080", ws: true },
       "/health": { target: "http://localhost:8080" },

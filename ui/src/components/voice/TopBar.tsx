@@ -1,5 +1,6 @@
-import { Settings as SettingsIcon, Sparkles, X } from "lucide-react";
+import { Home, Settings as SettingsIcon, Sparkles, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import type { Settings } from "@/hooks/useSettings";
 
 interface TopBarProps {
@@ -62,18 +63,28 @@ export default function TopBar({
         </span>
       </div>
 
-      <button
-        ref={buttonRef}
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className={`inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors ${
-          open ? "bg-white/30" : "hover:bg-white/20"
-        }`}
-        title="Settings"
-        aria-label="Settings"
-      >
-        <SettingsIcon className="h-4 w-4" />
-      </button>
+      <div className="flex items-center gap-1.5">
+        <Link
+          to="/"
+          className="inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors hover:bg-white/20"
+          title="Back to landing page"
+        >
+          <Home className="h-4 w-4" />
+          <span className="hidden sm:inline">Home</span>
+        </Link>
+        <button
+          ref={buttonRef}
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className={`inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors ${
+            open ? "bg-white/30" : "hover:bg-white/20"
+          }`}
+          title="Settings"
+          aria-label="Settings"
+        >
+          <SettingsIcon className="h-4 w-4" />
+        </button>
+      </div>
 
       {open && (
         <div
@@ -183,37 +194,42 @@ export default function TopBar({
               />
             </section>
 
-            {/* Microphone */}
-            <section className="space-y-1.5">
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
-                Microphone
-              </label>
-              <Check
-                checked={settings.startMicMuted}
-                onChange={(v) => onSettingsChange("startMicMuted", v)}
-                label="Start with mic muted"
-                hint="When unchecked, mic is unmuted as soon as the session connects."
-              />
-            </section>
+            {/* Microphone — only when voice mode is on. */}
+            {settings.enableVoiceMode && (
+              <section className="space-y-1.5">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
+                  Microphone
+                </label>
+                <Check
+                  checked={settings.startMicMuted}
+                  onChange={(v) => onSettingsChange("startMicMuted", v)}
+                  label="Start with mic muted"
+                  hint="When unchecked, mic is unmuted as soon as the session connects."
+                />
+              </section>
+            )}
 
-            {/* Language mode */}
-            <section className="space-y-1.5">
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
-                Language
-              </label>
-              <Radio
-                checked={settings.languageMode === "english"}
-                onChange={() => onSettingsChange("languageMode", "english")}
-                label="English only (default)"
-                hint="Agent always replies in English. Non-English speech is shown as a 'non-English detected' notice instead of being read aloud."
-              />
-              <Radio
-                checked={settings.languageMode === "international"}
-                onChange={() => onSettingsChange("languageMode", "international")}
-                label="International (any language, including English)"
-                hint="Agent mirrors whatever language you speak — English, Spanish, Mandarin, etc. Switching modes while connected restarts the Gemini session automatically."
-              />
-            </section>
+            {/* Language mode — voice-only; text mode lets the model handle
+                whatever language the user types. */}
+            {settings.enableVoiceMode && (
+              <section className="space-y-1.5">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
+                  Language
+                </label>
+                <Radio
+                  checked={settings.languageMode === "english"}
+                  onChange={() => onSettingsChange("languageMode", "english")}
+                  label="English only (default)"
+                  hint="Agent always replies in English. Non-English speech is shown as a 'non-English detected' notice instead of being read aloud."
+                />
+                <Radio
+                  checked={settings.languageMode === "international"}
+                  onChange={() => onSettingsChange("languageMode", "international")}
+                  label="International (any language, including English)"
+                  hint="Agent mirrors whatever language you speak — English, Spanish, Mandarin, etc. Switching modes while connected restarts the Gemini session automatically."
+                />
+              </section>
+            )}
 
             {/* Layout */}
             <section className="space-y-1.5">
@@ -287,36 +303,43 @@ export default function TopBar({
                 checked={settings.enableTextInput}
                 onChange={(v) => onSettingsChange("enableTextInput", v)}
                 label="Enable text message input"
-                hint="Adds a fallback text box + Send button below the agent chat. Off by default — primary UX is voice via the always-on mic."
+                hint="Shows the text box + Send button below the agent chat. On by default — this is now the primary input."
+              />
+              <Check
+                checked={settings.enableVoiceMode}
+                onChange={(v) => onSettingsChange("enableVoiceMode", v)}
+                label="Enable voice mode"
+                hint="Adds the always-on mic, voice waveform, mute button, and transcription pipeline. Off by default — flip on to talk to the agent instead of typing."
               />
             </section>
 
-            {/* Transcription — bottom of the panel since it's a power-user
-                toggle, not part of the main user flow. */}
-            <section className="space-y-1.5 border-t border-slate-200 pt-3">
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
-                Voice Transcription
-              </label>
-              <p className="text-[11px] text-slate-500">
-                Source for the user-speech text shown in the agent trace. The audio still goes to Gemini directly for the agent's reasoning regardless of this choice.
-              </p>
-              <Radio
-                checked={settings.transcriptionMethod === "live"}
-                onChange={() =>
-                  onSettingsChange("transcriptionMethod", "live")
-                }
-                label="Gemini Live API (default)"
-                hint="Opens a dedicated TEXT-only Live session for transcription. Higher fidelity than Web Speech, but uses one extra audio path per turn and counts against your Gemini quota."
-              />
-              <Radio
-                checked={settings.transcriptionMethod === "webspeech"}
-                onChange={() =>
-                  onSettingsChange("transcriptionMethod", "webspeech")
-                }
-                label="Browser Web Speech API"
-                hint="Chrome/Edge/Safari native STT. Free, low latency, but accuracy varies and Firefox isn't supported."
-              />
-            </section>
+            {/* Transcription — voice-only. Hidden when voice mode is off. */}
+            {settings.enableVoiceMode && (
+              <section className="space-y-1.5 border-t border-slate-200 pt-3">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
+                  Voice Transcription
+                </label>
+                <p className="text-[11px] text-slate-500">
+                  Source for the user-speech text shown in the agent trace. The audio still goes to Gemini directly for the agent's reasoning regardless of this choice.
+                </p>
+                <Radio
+                  checked={settings.transcriptionMethod === "live"}
+                  onChange={() =>
+                    onSettingsChange("transcriptionMethod", "live")
+                  }
+                  label="Gemini Live API (default)"
+                  hint="Opens a dedicated TEXT-only Live session for transcription. Higher fidelity than Web Speech, but uses one extra audio path per turn and counts against your Gemini quota."
+                />
+                <Radio
+                  checked={settings.transcriptionMethod === "webspeech"}
+                  onChange={() =>
+                    onSettingsChange("transcriptionMethod", "webspeech")
+                  }
+                  label="Browser Web Speech API"
+                  hint="Chrome/Edge/Safari native STT. Free, low latency, but accuracy varies and Firefox isn't supported."
+                />
+              </section>
+            )}
           </div>
         </div>
       )}
