@@ -26,16 +26,16 @@
 // inlineData) is supported by the standard generateContent path on most
 // Gemini 2.5 / 3.x models.
 //
-// Now that input is text-first (audio is opt-in), we use the strongest 3.1
-// model available — flash-lite was reasoning-light and skipped tool-call
-// steps. Pro is much more reliable for the ReAct loop but has tighter
-// free-tier rate limits (~5 RPM on AI Studio). If you hit 429s, flip to one
-// of the alternates below — they're verified-real model IDs.
-export const DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview";
+// Pro was hitting 429s ("free_tier_requests, limit: 0") — Gemini 3.1 Pro
+// isn't on the free tier at all. Switching to Gemini 3 Flash Preview, which
+// has actual free-tier headroom and decent tool-calling reasoning for our
+// ReAct loop. If 3-flash also gets rate-limited, swap to one of the
+// alternates below.
+export const DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview";
 
 // Alternates (verified-real model IDs):
-// export const DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite";   // smallest, fastest, weaker tool reasoning
-// export const DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview";   // hit 503 (high demand) under free tier earlier
+// export const DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview";   // strongest reasoning, NOT on free tier (429 immediately)
+// export const DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite";   // smallest/fastest, weaker tool reasoning
 // export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";          // stable GA fallback
 
 // HOLD: separate transcription model. Tried `gemini-3-flash-preview` for
@@ -47,4 +47,3 @@ export const DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview";
 // back to streaming voice.
 // export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-native-audio-preview-09-2025";
 // export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025";
-// export const DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-live-preview";

@@ -58,9 +58,6 @@ export default function TopBar({
         <span className="text-base font-semibold tracking-tight">
           Gemini NoSQL Data Wrangler
         </span>
-        <span className="ml-2 rounded-full bg-white/20 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-white/90">
-          MongoDB Atlas · Multimodal Live
-        </span>
       </div>
 
       <div className="flex items-center gap-1.5">

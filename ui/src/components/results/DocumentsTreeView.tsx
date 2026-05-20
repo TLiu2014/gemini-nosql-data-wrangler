@@ -1,8 +1,10 @@
 import {
+  ArrowDownAZ,
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
+  ListOrdered,
 } from "lucide-react";
 import {
   createContext,
@@ -13,6 +15,8 @@ import {
   useState,
 } from "react";
 import { cn } from "@/lib/Utils";
+
+export type KeyOrderMode = "normalized" | "original";
 
 /**
  * MongoDB-aware results viewer. Each document is a collapsible card; when
@@ -33,6 +37,11 @@ interface DocumentsTreeViewProps {
   rows: unknown[];
   selectedIndex: number | null;
   onSelect: (index: number | null) => void;
+  /** Toggle controlling whether keys across rows are aligned to a shared
+   *  union-order ("normalized") or kept in each doc's BSON insertion order
+   *  ("original"). Rendered in the toolbar to the right. */
+  keyOrderMode?: KeyOrderMode;
+  onKeyOrderModeChange?: (mode: KeyOrderMode) => void;
 }
 
 const COLLAPSED_KEY_PREVIEW_LIMIT = 4;
@@ -60,6 +69,8 @@ export default function DocumentsTreeView({
   rows,
   selectedIndex,
   onSelect,
+  keyOrderMode,
+  onKeyOrderModeChange,
 }: DocumentsTreeViewProps) {
   const nodesRef = useRef(new Set<NodeApi>());
 
@@ -107,6 +118,38 @@ export default function DocumentsTreeView({
             <ChevronsDownUp className="h-3 w-3" />
             Collapse all
           </button>
+          {keyOrderMode && onKeyOrderModeChange && (
+            <div className="ml-auto flex items-center gap-0.5 rounded border border-slate-200 bg-white p-0.5">
+              <button
+                type="button"
+                onClick={() => onKeyOrderModeChange("normalized")}
+                title="Align keys across rows to a shared first-appearance order"
+                className={cn(
+                  "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
+                  keyOrderMode === "normalized"
+                    ? "bg-blue-50 text-blue-700"
+                    : "text-slate-500 hover:bg-slate-100",
+                )}
+              >
+                <ArrowDownAZ className="h-3 w-3" />
+                Aligned keys
+              </button>
+              <button
+                type="button"
+                onClick={() => onKeyOrderModeChange("original")}
+                title="Keep each document's original BSON insertion order"
+                className={cn(
+                  "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
+                  keyOrderMode === "original"
+                    ? "bg-blue-50 text-blue-700"
+                    : "text-slate-500 hover:bg-slate-100",
+                )}
+              >
+                <ListOrdered className="h-3 w-3" />
+                Original order
+              </button>
+            </div>
+          )}
         </div>
         <div className="min-h-0 flex-1 overflow-auto bg-white font-mono text-[12px] leading-relaxed">
           {rows.map((row, i) => (

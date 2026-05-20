@@ -54,6 +54,137 @@ function asString(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
 }
 
+// Layered DAG auto-layout. The agent doesn't reliably set positions, and
+// the ones it does set tend to be (0,0) or arbitrary, so we always
+// overwrite — better a predictable, branching-aware layout than randomness.
+const CANVAS_NODE_X = 80;
+const CANVAS_NODE_Y0 = 60;
+const CANVAS_VERTICAL_GAP = 160;
+const CANVAS_HORIZONTAL_GAP = 240;
+
+type StageLike = {
+  id: string;
+  depends_on?: unknown;
+};
+
+/** Topological order over depends_on, falling back to array order for ties
+ *  and for any cycle remainder. Used for the sequential-chain edge fallback
+ *  when the agent ships stages without `depends_on`. */
+function topoOrderByDependsOn(stages: StageLike[]): string[] {
+  const ids = stages.map((s) => s.id);
+  const indexById = new Map(ids.map((id, i) => [id, i]));
+  const indegree = new Map(ids.map((id) => [id, 0]));
+  const adj = new Map(ids.map((id) => [id, [] as string[]]));
+
+  for (const stage of stages) {
+    const deps = Array.isArray(stage.depends_on) ? stage.depends_on : [];
+    for (const dep of deps) {
+      if (typeof dep !== "string" || !indegree.has(dep)) continue;
+      adj.get(dep)!.push(stage.id);
+      indegree.set(stage.id, (indegree.get(stage.id) ?? 0) + 1);
+    }
+  }
+
+  const queue: string[] = [];
+  for (const [id, deg] of indegree) if (deg === 0) queue.push(id);
+  queue.sort((a, b) => (indexById.get(a) ?? 0) - (indexById.get(b) ?? 0));
+
+  const ordered: string[] = [];
+  while (queue.length) {
+    const id = queue.shift()!;
+    ordered.push(id);
+    const next = (adj.get(id) ?? [])
+      .slice()
+      .sort((a, b) => (indexById.get(a) ?? 0) - (indexById.get(b) ?? 0));
+    for (const nid of next) {
+      const d = (indegree.get(nid) ?? 0) - 1;
+      indegree.set(nid, d);
+      if (d === 0) queue.push(nid);
+    }
+  }
+  if (ordered.length < ids.length) {
+    const seen = new Set(ordered);
+    for (const id of ids) if (!seen.has(id)) ordered.push(id);
+  }
+  return ordered;
+}
+
+/** Two-axis DAG layout for branching pipelines.
+ *  - y (depth) = longest path from any source. Children always sit below
+ *    their parents so flow direction reads top-down.
+ *  - x (column) = first child of each branching point keeps its parent's
+ *    column; subsequent children get fresh columns to the right. This puts
+ *    "branch 1" directly under the lookup and "branch 2" to its right —
+ *    rather than stacking them on top of each other in a single line.
+ *  Stage-array order is used as a tiebreaker so the agent's emit order
+ *  determines which branch is "primary". */
+function layoutBranchingDag(
+  stageIds: string[],
+  edges: Array<{ source: string; target: string }>,
+): Array<{ id: string; position: { x: number; y: number } }> {
+  const idSet = new Set(stageIds);
+  const indexById = new Map(stageIds.map((id, i) => [id, i]));
+  const children = new Map<string, string[]>();
+  const parents = new Map<string, string[]>();
+  for (const id of stageIds) {
+    children.set(id, []);
+    parents.set(id, []);
+  }
+  for (const e of edges) {
+    if (!idSet.has(e.source) || !idSet.has(e.target)) continue;
+    children.get(e.source)!.push(e.target);
+    parents.get(e.target)!.push(e.source);
+  }
+
+  // Depth = longest path from any source. Children always sit one row
+  // below their deepest parent, so even when a node has multiple parents,
+  // edges always point downward.
+  const depth = new Map<string, number>();
+  const visiting = new Set<string>();
+  function getDepth(id: string): number {
+    if (depth.has(id)) return depth.get(id)!;
+    if (visiting.has(id)) return 0; // cycle guard
+    visiting.add(id);
+    const ps = parents.get(id) ?? [];
+    const d = ps.length === 0 ? 0 : Math.max(...ps.map(getDepth)) + 1;
+    visiting.delete(id);
+    depth.set(id, d);
+    return d;
+  }
+  for (const id of stageIds) getDepth(id);
+
+  // Column assignment: DFS from sources, first child inherits parent's
+  // column, later children get freshly-allocated columns to the right.
+  const column = new Map<string, number>();
+  let nextCol = 0;
+  function assign(id: string, col: number): void {
+    if (column.has(id)) return;
+    column.set(id, col);
+    const kids = (children.get(id) ?? [])
+      .slice()
+      .sort((a, b) => (indexById.get(a) ?? 0) - (indexById.get(b) ?? 0));
+    for (let i = 0; i < kids.length; i++) {
+      const c = i === 0 ? col : nextCol++;
+      assign(kids[i], c);
+    }
+  }
+  const sources = stageIds
+    .filter((id) => (parents.get(id) ?? []).length === 0)
+    .sort((a, b) => (indexById.get(a) ?? 0) - (indexById.get(b) ?? 0));
+  for (const id of sources) assign(id, nextCol++);
+  for (const id of stageIds) {
+    if (!column.has(id)) column.set(id, nextCol++);
+  }
+
+  return stageIds.map((id) => ({
+    id,
+    position: {
+      x: CANVAS_NODE_X + (column.get(id) ?? 0) * CANVAS_HORIZONTAL_GAP,
+      y: CANVAS_NODE_Y0 + (depth.get(id) ?? 0) * CANVAS_VERTICAL_GAP,
+    },
+  }));
+}
+
 function normalizeAgentSchema(raw: unknown): PipelineSchema | null {
   if (!raw || typeof raw !== "object") return null;
   const s = raw as Partial<PipelineSchema>;
@@ -81,6 +212,41 @@ function normalizeAgentSchema(raw: unknown): PipelineSchema | null {
         };
       })
     : [];
+
+  // Derive edges from depends_on first (authoritative). If no stage declared
+  // a dependency (single-stage pipeline, or agent skipped depends_on), fall
+  // back to chaining consecutive stages so the canvas at least shows flow.
+  const derivedEdges: { id: string; source: string; target: string }[] = [];
+  for (const stage of stages) {
+    const deps = Array.isArray(stage.depends_on) ? stage.depends_on : [];
+    for (const dep of deps) {
+      if (typeof dep !== "string") continue;
+      if (!stages.some((st) => st.id === dep)) continue;
+      derivedEdges.push({
+        id: `e-${dep}-${stage.id}`,
+        source: dep,
+        target: stage.id,
+      });
+    }
+  }
+  const ordered = topoOrderByDependsOn(stages);
+  const edges =
+    derivedEdges.length > 0
+      ? derivedEdges
+      : ordered.slice(1).map((id, i) => ({
+          id: `e-${ordered[i]}-${id}`,
+          source: ordered[i],
+          target: id,
+        }));
+
+  // Compute layout from the same edge set that drives connectivity, so
+  // branches read as branches (parallel columns) rather than a single
+  // vertical line.
+  const layoutNodes = layoutBranchingDag(
+    stages.map((s) => s.id),
+    edges,
+  );
+
   return {
     version: "1.0",
     pipeline: {
@@ -94,8 +260,8 @@ function normalizeAgentSchema(raw: unknown): PipelineSchema | null {
         : {},
     stages,
     layout: {
-      nodes: Array.isArray(s.layout?.nodes) ? s.layout!.nodes : [],
-      edges: Array.isArray(s.layout?.edges) ? s.layout!.edges : [],
+      nodes: layoutNodes,
+      edges,
     },
   };
 }
@@ -232,14 +398,13 @@ export default function Workspace() {
             };
           }
 
-          // Merge tool_call_start + tool_call_result into one entry so each
-          // tool call shows as a single evolving card (calling → result),
-          // not two stacked rows. When the result arrives, find the most
-          // recent matching `tool_call_start` entry and replace it with
-          // an updated trace that carries BOTH the original args and the
-          // returned payload.
+          // tool_call_result events need the corresponding start's args
+          // attached so the expanded card shows {args + result}. We keep
+          // BOTH events in the timeline (start as "Calling X…", result as
+          // "Called X") but the result carries the args along for display.
           if (msg.kind === "tool_call_result") {
             setChatEntries((prev) => {
+              let augmented = msg;
               for (let i = prev.length - 1; i >= 0; i--) {
                 const e = prev[i];
                 if (
@@ -247,23 +412,13 @@ export default function Workspace() {
                   e.trace.kind === "tool_call_start" &&
                   e.trace.label === msg.label
                 ) {
-                  const startArgs = e.trace.payload;
-                  const merged: ChatEntry = {
-                    ...e,
-                    trace: {
-                      ...msg,
-                      args: startArgs,
-                    },
-                  };
-                  const next = prev.slice();
-                  next[i] = merged;
-                  return next;
+                  augmented = { ...msg, args: e.trace.payload };
+                  break;
                 }
               }
-              // No matching start found — fall back to append.
               return [
                 ...prev,
-                { kind: "trace", trace: inbound, id: nextEntryId() },
+                { kind: "trace", trace: augmented, id: nextEntryId() },
               ];
             });
             break;
@@ -532,6 +687,21 @@ export default function Workspace() {
     activeTranscript,
   ]);
 
+  // Auto-switch the results panel to a newly-populated stage's tab — but
+  // only AFTER `push_results` lands, so the user doesn't get yanked to a
+  // blank "Waiting for results" placeholder while the agent is still
+  // working. We track which stageIds we've already seen results for; the
+  // first time a brand-new one arrives, we switch the active tab.
+  const seenResultStageIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const r of results) {
+      if (!seenResultStageIdsRef.current.has(r.stageId)) {
+        seenResultStageIdsRef.current.add(r.stageId);
+        setActiveResultsTab(r.stageId);
+      }
+    }
+  }, [results]);
+
   // When the user changes `sampleFlow` in Settings, swap the canvas (and
   // clear any accumulated results) immediately.
   const lastAppliedSample = useRef(settings.sampleFlow);
@@ -543,6 +713,7 @@ export default function Workspace() {
     else setSchema(null);
     setResults([]);
     setActiveResultsTab(null);
+    seenResultStageIdsRef.current.clear();
   }, [settings.sampleFlow]);
 
   // Single consolidated status block — one bordered card containing both
@@ -771,6 +942,7 @@ export default function Workspace() {
                 activeTab={activeResultsTab}
                 onActiveTabChange={setActiveResultsTab}
                 splitOrientation={stacked ? "horizontal" : "vertical"}
+                agentBusy={agentBusy}
               />
             </section>
           );

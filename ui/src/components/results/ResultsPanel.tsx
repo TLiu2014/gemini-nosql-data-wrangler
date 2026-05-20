@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Database, ListTree, RefreshCw } from "lucide-react";
+import { Database, ListTree, Loader2, RefreshCw } from "lucide-react";
 import { JsonView } from "@/components/views/JsonView";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/Tabs";
 import { MFLIX_COLLECTIONS } from "@/samples/mflixCollections";
 import { useDragResize } from "@/hooks/useDragResize";
 import { cn } from "@/lib/Utils";
-import DocumentsTreeView from "./DocumentsTreeView";
+import { normalizeRowKeyOrder } from "@/lib/normalizeRows";
+import DocumentsTreeView, { type KeyOrderMode } from "./DocumentsTreeView";
 import type { PipelineSchema } from "@/Schema";
 import type { MflixCollectionsMessage, ResultsMessage } from "@/types/ws";
 
@@ -32,6 +33,10 @@ interface ResultsPanelProps {
    *  `horizontal` (default) = table left, JSON right.
    *  `vertical`             = table top, JSON bottom. */
   splitOrientation?: "horizontal" | "vertical";
+  /** True when the agent is mid-turn. Used to spin a small loader inside
+   *  any placeholder tab that isn't currently focused — so the user can see
+   *  at a glance which downstream stages are still waiting for data. */
+  agentBusy?: boolean;
 }
 
 const SCHEMA_TAB_ID = "__schema__";
@@ -53,6 +58,7 @@ export default function ResultsPanel({
   activeTab,
   onActiveTabChange,
   splitOrientation = "horizontal",
+  agentBusy = false,
 }: ResultsPanelProps) {
   // Tabs are sourced from the canvas (one per stage), so every node's
   // "view output" link always has a tab to land on, regardless of whether
@@ -111,6 +117,13 @@ export default function ResultsPanel({
   const [internalActive, setInternalActive] = useState<string>(defaultTab);
   const active = activeTab ?? internalActive;
 
+  // Key-order display mode: "normalized" applies the union-first-appearance
+  // re-ordering so every row's keys line up; "original" keeps Mongo's
+  // per-document BSON insertion order. Default to normalized — the
+  // inconsistency is confusing to read by default — but expose a toggle so
+  // users can see the raw shape on demand.
+  const [keyOrderMode, setKeyOrderMode] = useState<KeyOrderMode>("normalized");
+
   const handleChange = (next: string) => {
     setInternalActive(next);
     onActiveTabChange?.(next);
@@ -140,20 +153,36 @@ export default function ResultsPanel({
             </span>
           </TabsTrigger>
         )}
-        {tabs.map((t) => (
-          <TabsTrigger key={t.id} value={t.id}>
-            {t.label}
-            <span
-              className={
-                t.placeholder
-                  ? "ml-1 rounded bg-slate-50 px-1 py-0.5 text-[10px] italic text-slate-400"
-                  : "ml-1 rounded bg-slate-100 px-1 py-0.5 text-[10px] text-slate-500"
-              }
-            >
-              {t.placeholder ? "—" : t.rows?.length ?? 0}
-            </span>
-          </TabsTrigger>
-        ))}
+        {tabs.map((t) => {
+          // Show a spinner instead of the em-dash placeholder when the
+          // agent is mid-turn AND this tab is still empty AND not focused —
+          // tells the user "this one is still cooking" without them having
+          // to click into it. Once the result lands the spinner becomes
+          // the row-count badge.
+          const showSpinner =
+            t.placeholder && agentBusy && t.id !== effectiveActive;
+          return (
+            <TabsTrigger key={t.id} value={t.id}>
+              {t.label}
+              <span
+                className={cn(
+                  "ml-1 inline-flex items-center justify-center rounded px-1 py-0.5 text-[10px]",
+                  t.placeholder
+                    ? "bg-slate-50 italic text-slate-400"
+                    : "bg-slate-100 text-slate-500",
+                )}
+              >
+                {showSpinner ? (
+                  <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
+                ) : t.placeholder ? (
+                  "—"
+                ) : (
+                  t.rows?.length ?? 0
+                )}
+              </span>
+            </TabsTrigger>
+          );
+        })}
         {showSchemaJson && (
           <TabsTrigger value={SCHEMA_TAB_ID}>
             <ListTree className="mr-1 inline h-3 w-3" />
@@ -179,6 +208,8 @@ export default function ResultsPanel({
               rows={t.rows ?? []}
               label={t.label}
               orientation={splitOrientation}
+              keyOrderMode={keyOrderMode}
+              onKeyOrderModeChange={setKeyOrderMode}
             />
           )}
         </TabsContent>
@@ -236,10 +267,14 @@ function DocumentsSplitView({
   rows,
   label,
   orientation = "horizontal",
+  keyOrderMode,
+  onKeyOrderModeChange,
 }: {
   rows: unknown[];
   label: string;
   orientation?: "horizontal" | "vertical";
+  keyOrderMode: KeyOrderMode;
+  onKeyOrderModeChange: (mode: KeyOrderMode) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
@@ -248,6 +283,14 @@ function DocumentsSplitView({
   useEffect(() => {
     setSelectedIndex(null);
   }, [rows]);
+
+  // Apply key-order normalization based on the toggle. Memoized on the rows
+  // identity + mode so toggling doesn't reshape rows on unrelated re-renders.
+  const displayRows = useMemo(
+    () =>
+      keyOrderMode === "normalized" ? normalizeRowKeyOrder(rows) : rows,
+    [rows, keyOrderMode],
+  );
 
   const split = useDragResize<number>(
     SPLIT_DEFAULT,
@@ -263,8 +306,8 @@ function DocumentsSplitView({
     },
   );
 
-  const focused = selectedIndex !== null ? rows[selectedIndex] : null;
-  const jsonData = focused ?? rows;
+  const focused = selectedIndex !== null ? displayRows[selectedIndex] : null;
+  const jsonData = focused ?? displayRows;
   const jsonTitle =
     focused != null ? `${label} · doc #${selectedIndex}` : `${label}`;
   const jsonInfo =
@@ -274,10 +317,10 @@ function DocumentsSplitView({
         onClick={() => setSelectedIndex(null)}
         className="text-blue-600 underline-offset-2 hover:underline"
       >
-        ← back to all {rows.length} rows
+        ← back to all {displayRows.length} rows
       </button>
     ) : (
-      `${rows.length} document${rows.length === 1 ? "" : "s"}`
+      `${displayRows.length} document${displayRows.length === 1 ? "" : "s"}`
     );
 
   const isHorizontal = orientation === "horizontal";
@@ -301,9 +344,11 @@ function DocumentsSplitView({
         style={firstSize}
       >
         <DocumentsTreeView
-          rows={rows}
+          rows={displayRows}
           selectedIndex={selectedIndex}
           onSelect={setSelectedIndex}
+          keyOrderMode={keyOrderMode}
+          onKeyOrderModeChange={onKeyOrderModeChange}
         />
       </div>
 

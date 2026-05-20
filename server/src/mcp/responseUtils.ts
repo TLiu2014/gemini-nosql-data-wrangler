@@ -51,3 +51,35 @@ function stripHeavyFieldsFromText(text: string): string {
   }
   return out;
 }
+
+/**
+ * Parse the document rows out of an MCP `aggregate` / `find` response. The
+ * server returns a `content` array of text entries: one or more narrative
+ * lines ("The aggregation resulted in N documents.", warning preambles)
+ * followed by either each document as its own text entry, or all
+ * documents concatenated as a JSON array. We're permissive about both
+ * shapes — anything that JSON-parses to an object or array contributes its
+ * docs to the output; non-JSON text is skipped.
+ */
+export function extractDocsFromMcpAggregate(raw: unknown): unknown[] {
+  if (!raw || typeof raw !== "object") return [];
+  const r = raw as { content?: Array<{ type?: string; text?: string }> };
+  if (!Array.isArray(r.content)) return [];
+  const docs: unknown[] = [];
+  for (const entry of r.content) {
+    if (entry?.type !== "text" || typeof entry.text !== "string") continue;
+    const text = entry.text.trim();
+    if (!text || (text[0] !== "{" && text[0] !== "[")) continue;
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) {
+        docs.push(...parsed);
+      } else if (parsed && typeof parsed === "object") {
+        docs.push(parsed);
+      }
+    } catch {
+      /* fragment isn't valid JSON — skip */
+    }
+  }
+  return docs;
+}

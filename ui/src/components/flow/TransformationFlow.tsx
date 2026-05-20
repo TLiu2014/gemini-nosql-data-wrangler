@@ -150,7 +150,7 @@ export const TransformationFlow = forwardRef<
     // before React Flow has mounted its store.
     requestAnimationFrame(() => {
       try {
-        rf.fitView({ padding: 0.1, duration: 250 });
+        rf.fitView({ padding: 0.2, duration: 300 });
       } catch {
         /* not ready yet — onInit's fitView covers the initial mount */
       }
@@ -461,7 +461,7 @@ export const TransformationFlow = forwardRef<
               connectionMode={ConnectionMode.Loose}
               deleteKeyCode={isReadOnly ? null : "Delete"}
               onInit={(instance) =>
-                requestAnimationFrame(() => instance.fitView({ padding: 0.1 }))
+                requestAnimationFrame(() => instance.fitView({ padding: 0.2 }))
               }
               proOptions={{ hideAttribution: true }}
               className="h-full w-full"

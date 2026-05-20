@@ -116,7 +116,7 @@ function StageNodeImpl({ id, data, selected }: NodeProps<StageNodeType>) {
   return (
     <div
       className={cn(
-        "relative min-w-[200px] rounded-md border-2 bg-white p-3 shadow-sm transition-shadow",
+        "relative min-w-[170px] rounded-md border-2 bg-white p-2 shadow-sm transition-shadow",
         selected ? "ring-2 ring-blue-400 ring-offset-2" : "hover:shadow-md",
         isVectorSearch &&
           "bg-gradient-to-br from-purple-50 via-white to-fuchsia-50 shadow-purple-200/60 ring-1 ring-purple-200 tfu-vector-sparkle",
@@ -185,18 +185,18 @@ function StageNodeImpl({ id, data, selected }: NodeProps<StageNodeType>) {
         style={{ top: "50%" }}
       />
 
-      <div className="flex items-start gap-2">
+      <div className="flex items-start gap-1.5">
         <div
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full"
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
           style={{ backgroundColor: color }}
         >
-          <Icon className="h-3.5 w-3.5 text-white" strokeWidth={2.5} />
+          <Icon className="h-3 w-3 text-white" strokeWidth={2.5} />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center justify-between gap-1.5">
             <span
               className={cn(
-                "text-xs font-semibold tracking-wide",
+                "text-[11px] font-semibold tracking-wide",
                 isVectorSearch ? "font-mono normal-case" : "uppercase",
               )}
               style={{ color }}
@@ -204,7 +204,7 @@ function StageNodeImpl({ id, data, selected }: NodeProps<StageNodeType>) {
               {stageLabel}
             </span>
             <div className="flex items-center gap-1">
-              <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
+              <span className="rounded bg-gray-100 px-1 py-0.5 text-[9px] font-medium text-gray-600">
                 #{data.stageIndex}
               </span>
               {onEdit && !readOnly && (
@@ -217,14 +217,14 @@ function StageNodeImpl({ id, data, selected }: NodeProps<StageNodeType>) {
                   onMouseDown={(e) => e.stopPropagation()}
                   title="Edit stage (or double-click the node)"
                   aria-label="Edit stage"
-                  className="inline-flex h-5 w-5 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                  className="inline-flex h-4 w-4 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
                 >
-                  <Pencil className="h-3 w-3" />
+                  <Pencil className="h-2.5 w-2.5" />
                 </button>
               )}
             </div>
           </div>
-          <div className="mt-1 truncate text-sm text-gray-800">{data.label}</div>
+          <div className="mt-0.5 truncate text-[13px] text-gray-800">{data.label}</div>
           {data.outputTableName && (
             onShowOutput ? (
               <button

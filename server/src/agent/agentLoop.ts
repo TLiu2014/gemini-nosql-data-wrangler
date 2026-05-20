@@ -6,7 +6,10 @@ import {
 } from "@google/genai";
 
 import type { MongoMcpClient } from "../mcp/mongoClient.js";
-import { stripHeavyFieldsFromMcpResult } from "../mcp/responseUtils.js";
+import {
+  extractDocsFromMcpAggregate,
+  stripHeavyFieldsFromMcpResult,
+} from "../mcp/responseUtils.js";
 import type { ClientSocket } from "../websocket/clientSocket.js";
 import type { LanguageMode } from "../websocket/protocol.js";
 import { buildSystemInstruction } from "./systemInstruction.js";
@@ -166,6 +169,13 @@ export class AgentLoop {
         ? input.slice(0, 60)
         : `${input.audio.mimeType} (${input.audio.data.length}b base64)`;
     console.log(`[agent] turn start (${inputKind}): ${inputPreview}`);
+    // Visible "Thinking…" milestone so the trace timeline has a first step
+    // before any tool call fires.
+    this.opts.client.sendTrace({
+      kind: "info",
+      label: "thinking",
+      text: "Thinking…",
+    });
 
     try {
       let message;
@@ -369,6 +379,11 @@ export class AgentLoop {
     args: Record<string, unknown>,
   ): Promise<{ response: Record<string, unknown>; isError?: boolean }> {
     if (isCustomToolName(name)) {
+      // run_pipeline is async (it calls back into MCP) — handle it
+      // separately from the synchronous custom tools.
+      if (name === CUSTOM_TOOL_NAMES.run_pipeline) {
+        return this.executeRunPipeline(args);
+      }
       return this.executeCustomTool(name, args);
     }
     if (this.opts.mcp.isMcpToolName(name)) {
@@ -393,6 +408,124 @@ export class AgentLoop {
     return {
       response: { error: `Unknown tool: ${name}` },
       isError: true,
+    };
+  }
+
+  /**
+   * Execute the canvas pipeline once and populate every stage's results
+   * tab with a preview. Uses `$facet` so the underlying pipeline still
+   * sees the full collection — `preview_limit` is applied per branch and
+   * only affects what the UI shows, not the math.
+   *
+   * Branch layout:
+   *   s0: [ { $limit: K } ]                          ← raw collection (Source stage)
+   *   s1: [ pipeline[0], { $limit: K } ]             ← after first pipeline step
+   *   ...
+   *   sN: [ ...pipeline, { $limit: K } ]             ← final stage
+   *
+   * The final branch also gets `$limit` — these are previews, and Atlas
+   * will reject `$facet` branches that return more than 16MB anyway.
+   */
+  private async executeRunPipeline(
+    args: Record<string, unknown>,
+  ): Promise<{ response: Record<string, unknown>; isError?: boolean }> {
+    if (!this.opts.mcp.isConnected()) {
+      return {
+        response: {
+          error:
+            "MongoDB Atlas is not connected. Ask the user to configure the connection string in Settings.",
+        },
+        isError: true,
+      };
+    }
+
+    const database = typeof args.database === "string" ? args.database : null;
+    const collection =
+      typeof args.collection === "string" ? args.collection : null;
+    const pipeline = Array.isArray(args.pipeline) ? args.pipeline : null;
+    const stageIds = Array.isArray(args.stage_ids)
+      ? (args.stage_ids.filter((s) => typeof s === "string") as string[])
+      : null;
+    const previewLimit =
+      typeof args.preview_limit === "number" && args.preview_limit > 0
+        ? Math.floor(args.preview_limit)
+        : 20;
+
+    if (!database || !collection || !pipeline || !stageIds) {
+      return {
+        response: {
+          error:
+            "run_pipeline requires database (string), collection (string), pipeline (array), stage_ids (array of strings).",
+        },
+        isError: true,
+      };
+    }
+    if (stageIds.length !== pipeline.length + 1) {
+      return {
+        response: {
+          error: `stage_ids.length (${stageIds.length}) must equal pipeline.length + 1 (${pipeline.length + 1}). Index 0 is the source stage; index i (i >= 1) is the stage after applying pipeline[i-1].`,
+        },
+        isError: true,
+      };
+    }
+
+    // Build one $facet branch per canvas stage. We use synthetic keys
+    // `s0`, `s1`, ... so we can map back to stage_ids by index.
+    const facetBranches: Record<string, unknown[]> = {};
+    for (let i = 0; i < stageIds.length; i++) {
+      const prefix = pipeline.slice(0, i);
+      facetBranches[`s${i}`] = [...prefix, { $limit: previewLimit }];
+    }
+
+    const facetPipeline = [{ $facet: facetBranches }];
+
+    let raw: unknown;
+    try {
+      raw = await this.opts.mcp.callTool("aggregate", {
+        database,
+        collection,
+        pipeline: facetPipeline,
+      });
+    } catch (err) {
+      return { response: { error: String(err) }, isError: true };
+    }
+
+    const cleaned = stripHeavyFieldsFromMcpResult(raw);
+    if ((cleaned as { isError?: boolean })?.isError) {
+      return { response: { result: cleaned }, isError: true };
+    }
+
+    const docs = extractDocsFromMcpAggregate(cleaned);
+    // $facet returns a single doc whose keys are the branch names.
+    const facetDoc = (docs[0] ?? {}) as Record<string, unknown>;
+
+    // Dispatch preview rows per stage. Track counts so we can echo a
+    // summary back to the agent without including the full data.
+    const previewed: Array<{ stageId: string; rows: number }> = [];
+    for (let i = 0; i < stageIds.length; i++) {
+      const stageId = stageIds[i];
+      const branch = facetDoc[`s${i}`];
+      const rows = Array.isArray(branch) ? branch : [];
+      this.opts.client.sendResults({ stageId, rows });
+      previewed.push({ stageId, rows: rows.length });
+    }
+
+    // Return the final stage's rows to the agent so it can summarize. Cap
+    // to a small slice so we don't blow the function-response budget on
+    // wide documents.
+    const finalIdx = stageIds.length - 1;
+    const finalRows = Array.isArray(facetDoc[`s${finalIdx}`])
+      ? (facetDoc[`s${finalIdx}`] as unknown[])
+      : [];
+    const SUMMARY_ROW_CAP = 5;
+    return {
+      response: {
+        ok: true,
+        previewed,
+        final_stage_id: stageIds[finalIdx],
+        final_row_count: finalRows.length,
+        final_rows_sample: finalRows.slice(0, SUMMARY_ROW_CAP),
+      },
     };
   }
 
