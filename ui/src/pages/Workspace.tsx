@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { Mic, MicOff, Plug, PlugZap } from "lucide-react";
 import { TransformationFlow } from "@/components/flow/TransformationFlow";
 import TopBar from "@/components/voice/TopBar";
 import {
@@ -33,7 +32,11 @@ import type {
   ServerMessage,
 } from "@/types/ws";
 
-const SIDEBAR_MIN = 320;
+// Connection status + Connect button moved to the TopBar, so the chat
+// sidebar no longer needs to host them. The chat panel still needs enough
+// width to keep the visual trace cards readable without aggressive
+// wrapping.
+const SIDEBAR_MIN = 280;
 const SIDEBAR_MAX = 560;
 const SIDEBAR_DEFAULT = 380;
 
@@ -716,9 +719,9 @@ export default function Workspace() {
     seenResultStageIdsRef.current.clear();
   }, [settings.sampleFlow]);
 
-  // Single consolidated status block — one bordered card containing both
-  // connection rows, the (rare) save notice, and the action buttons. Easier
-  // to scan than two stacked sections.
+  // Connection state surfaced to the TopBar. The sidebar no longer hosts
+  // a StatusBar — Atlas/Gemini status pills + the Connect button live in
+  // the header now, freeing the chat panel for its actual purpose.
   const isConnected = ws.state === "connected";
   const isConnecting = ws.state === "connecting";
   // Effective Gemini state: WS open but server hasn't finished spawning the
@@ -728,110 +731,6 @@ export default function Workspace() {
     ws.state === "connected" && geminiConnection !== "connected"
       ? "connecting"
       : geminiConnection;
-  // Vertical-stacked status block — sits at the top of the sidebar above
-  // the chat panel. Compact rows + a buttons row underneath, plus optional
-  // save-notice / error strips. Same general shape as gemini-data-wrangler.
-  const StatusBar = useMemo(
-    () => (
-      <div className="shrink-0 border-b border-slate-200 bg-white px-3 py-3 space-y-2.5">
-        {saveNotice && (
-          <div className="rounded border border-blue-200 bg-blue-50 px-2 py-1.5 text-xs leading-snug text-blue-700">
-            ✓ {saveNotice}
-          </div>
-        )}
-        <StatusRow
-          label="MongoDB Atlas"
-          state={atlasConnection}
-          detail={atlasDetail}
-        />
-        <StatusRow
-          label="Gemini"
-          state={geminiEffective}
-          detail={geminiEffective === "connected" ? geminiDetail : undefined}
-        />
-        {voiceMode && (
-          <StatusRow
-            label={
-              activeTranscript.method === "live"
-                ? "Transcript (Live)"
-                : "Transcript (Web Speech)"
-            }
-            state={activeTranscript.status}
-            detail={activeTranscript.statusDetail}
-          />
-        )}
-        <div className="flex min-w-0 gap-2 pt-1">
-          {isConnected ? (
-            <CtrlButton
-              onClick={handleDisconnect}
-              className="border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-              title="Disconnect from agent"
-            >
-              <Plug className="h-3.5 w-3.5" />
-              Disconnect
-            </CtrlButton>
-          ) : (
-            <CtrlButton
-              onClick={handleConnect}
-              disabled={isConnecting}
-              className="border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
-              title="Connect to agent"
-            >
-              <PlugZap className="h-3.5 w-3.5" />
-              {isConnecting ? "Connecting…" : "Connect"}
-            </CtrlButton>
-          )}
-          {voiceMode && (
-            <CtrlButton
-              onClick={() => voice.setMuted(!voice.muted)}
-              disabled={!isConnected || voice.state === "error"}
-              className={cn(
-                voice.muted
-                  ? "border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100"
-                  : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50",
-              )}
-              title={
-                voice.state === "error"
-                  ? voice.errorDetail ?? "Microphone unavailable"
-                  : voice.muted
-                    ? "Unmute mic"
-                    : "Mute mic"
-              }
-            >
-              {voice.muted ? (
-                <>
-                  <MicOff className="h-3.5 w-3.5" /> Unmute
-                </>
-              ) : (
-                <>
-                  <Mic className="h-3.5 w-3.5" /> Mute
-                </>
-              )}
-            </CtrlButton>
-          )}
-        </div>
-      </div>
-    ),
-    [
-      atlasConnection,
-      atlasDetail,
-      geminiEffective,
-      geminiDetail,
-      saveNotice,
-      isConnected,
-      isConnecting,
-      handleConnect,
-      handleDisconnect,
-      voice.muted,
-      voice.state,
-      voice.errorDetail,
-      voice.setMuted,
-      activeTranscript.method,
-      activeTranscript.status,
-      activeTranscript.statusDetail,
-      voiceMode,
-    ],
-  );
 
   return (
     <div className="flex h-screen w-screen flex-col bg-slate-50">
@@ -839,6 +738,15 @@ export default function Workspace() {
         settings={settings}
         onSettingsChange={updateSetting}
         onSaveNotice={flashSaveNotice}
+        saveNotice={saveNotice}
+        atlasConnection={atlasConnection}
+        atlasDetail={atlasDetail}
+        geminiConnection={geminiEffective}
+        geminiDetail={geminiDetail}
+        isConnected={isConnected}
+        isConnecting={isConnecting}
+        onConnect={handleConnect}
+        onDisconnect={handleDisconnect}
       />
 
       <div className="flex min-h-0 flex-1">
@@ -846,7 +754,6 @@ export default function Workspace() {
           className="flex h-full min-w-0 shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-white"
           style={{ width: sidebar.value }}
         >
-          {StatusBar}
           <div className="min-h-0 flex-1">
             <AgentChatPanel
               entries={chatEntries}
@@ -935,6 +842,7 @@ export default function Workspace() {
                 results={results}
                 showSchemaJson={settings.showSchemaJson}
                 showMflixCollections={settings.showMflixCollections}
+                showResultsJsonPane={settings.showResultsJsonPane}
                 mflixRefresh={mflixRefresh}
                 mflixRefreshing={mflixRefreshing}
                 onRefreshMflix={handleRefreshMflix}
@@ -966,99 +874,3 @@ export default function Workspace() {
   );
 }
 
-/* ───────────── Sidebar status helpers (match the pre-refactor look) ───────────── */
-
-function StatusDot({ state }: { state: ConnectionState }) {
-  const color =
-    state === "connected"
-      ? "bg-emerald-500"
-      : state === "connecting"
-        ? "bg-amber-400 animate-pulse"
-        : state === "error"
-          ? "bg-rose-500"
-          : "bg-slate-300";
-  return <span className={cn("h-2 w-2 rounded-full", color)} />;
-}
-
-function statusLabel(state: ConnectionState, detail?: string): string {
-  if (detail) return detail;
-  switch (state) {
-    case "connected":
-      return "Connected";
-    case "connecting":
-      return "Connecting…";
-    case "error":
-      return "Error";
-    default:
-      return "Disconnected";
-  }
-}
-
-/** Vertical status row used in the sidebar's StatusBar block. Label on the
- *  left with a colored dot; state text on the right. Errors expand into a
- *  rose-tinted detail strip below the row. */
-function StatusRow({
-  label,
-  state,
-  detail,
-}: {
-  label: string;
-  state: ConnectionState;
-  detail?: string;
-}) {
-  const isError = state === "error";
-  return (
-    <div className="space-y-1 text-sm">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <StatusDot state={state} />
-          <span className="font-medium text-slate-700">{label}</span>
-        </div>
-        <span
-          className={cn(
-            "truncate text-xs",
-            isError ? "text-rose-600" : "text-slate-500",
-          )}
-          title={detail}
-        >
-          {isError ? "Error" : statusLabel(state, detail)}
-        </span>
-      </div>
-      {isError && detail && (
-        <div className="rounded border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs leading-snug text-rose-700">
-          {detail}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function CtrlButton({
-  onClick,
-  disabled,
-  title,
-  className,
-  children,
-}: {
-  onClick: () => void;
-  disabled?: boolean;
-  title?: string;
-  className?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      className={cn(
-        "inline-flex h-10 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md border px-3 text-sm font-medium shadow-sm transition-colors",
-        "disabled:cursor-not-allowed disabled:opacity-50",
-        className,
-      )}
-    >
-      {children}
-    </button>
-  );
-}

@@ -1,20 +1,53 @@
-import { Home, Settings as SettingsIcon, Sparkles, X } from "lucide-react";
+import {
+  Home,
+  Plug,
+  PlugZap,
+  Settings as SettingsIcon,
+  Sparkles,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { Settings } from "@/hooks/useSettings";
+import type { ConnectionState } from "@/types/ws";
+import { cn } from "@/lib/Utils";
 
 interface TopBarProps {
   settings: Settings;
   onSettingsChange: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   /** Fired when the user clicks Save on API key / Mongo URI inputs. The host
-   *  uses it to flash a confirmation message in the sidebar status bar. */
+   *  uses it to flash a confirmation message — we render it inline in the
+   *  TopBar (replacing the old sidebar StatusBar location). */
   onSaveNotice?: (message: string) => void;
+  /** Inline save-confirmation chip rendered next to the status dots. Null
+   *  hides it. The host controls the auto-clear timer. */
+  saveNotice?: string | null;
+  /** Atlas + Gemini connection states, shown as colored dots in the header
+   *  instead of the old left-sidebar StatusBar block. */
+  atlasConnection: ConnectionState;
+  atlasDetail?: string;
+  geminiConnection: ConnectionState;
+  geminiDetail?: string;
+  /** Action handlers for the inline Connect/Disconnect button. */
+  isConnected: boolean;
+  isConnecting: boolean;
+  onConnect: () => void;
+  onDisconnect: () => void;
 }
 
 export default function TopBar({
   settings,
   onSettingsChange,
   onSaveNotice,
+  saveNotice,
+  atlasConnection,
+  atlasDetail,
+  geminiConnection,
+  geminiDetail,
+  isConnected,
+  isConnecting,
+  onConnect,
+  onDisconnect,
 }: TopBarProps) {
   const [open, setOpen] = useState(false);
   const [draftKey, setDraftKey] = useState(settings.apiKey);
@@ -60,7 +93,50 @@ export default function TopBar({
         </span>
       </div>
 
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-2">
+        {saveNotice && (
+          <span
+            className="hidden items-center gap-1 rounded-full bg-white/20 px-2.5 py-1 text-[11px] font-medium md:inline-flex"
+            title={saveNotice}
+          >
+            ✓ {saveNotice}
+          </span>
+        )}
+        <StatusPill
+          label="Atlas"
+          state={atlasConnection}
+          detail={atlasDetail}
+        />
+        <StatusPill
+          label="Gemini"
+          state={geminiConnection}
+          detail={geminiDetail}
+        />
+        {isConnected ? (
+          <button
+            type="button"
+            onClick={onDisconnect}
+            title="Disconnect from agent"
+            className="inline-flex h-9 items-center gap-1.5 rounded-full bg-white/15 px-3 text-xs font-medium transition-colors hover:bg-white/25"
+          >
+            <Plug className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Disconnect</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onConnect}
+            disabled={isConnecting}
+            title="Connect to agent"
+            className={cn(
+              "inline-flex h-9 items-center gap-1.5 rounded-full bg-emerald-400/90 px-3 text-xs font-semibold text-emerald-950 shadow-sm transition-colors hover:bg-emerald-300",
+              isConnecting && "cursor-not-allowed opacity-70",
+            )}
+          >
+            <PlugZap className="h-3.5 w-3.5" />
+            <span>{isConnecting ? "Connecting…" : "Connect"}</span>
+          </button>
+        )}
         <Link
           to="/"
           className="inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors hover:bg-white/20"
@@ -100,6 +176,7 @@ export default function TopBar({
           </div>
 
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+            <GroupHeader>Connection</GroupHeader>
             {/* API key */}
             <section className="space-y-1.5">
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
@@ -178,18 +255,110 @@ export default function TopBar({
               </p>
             </section>
 
-            {/* Connection */}
+            {/* Auto-connect — part of the Connection group above. */}
             <section className="space-y-1.5">
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
-                Connection
-              </label>
               <Check
                 checked={settings.autoConnect}
                 onChange={(v) => onSettingsChange("autoConnect", v)}
                 label="Auto-connect on load"
-                hint="Otherwise click Connect in the sidebar (saves free-tier quota)."
+                hint="Otherwise click Connect in the header (saves free-tier quota)."
               />
             </section>
+
+            <GroupHeader>Canvas</GroupHeader>
+
+            {/* Sample flow */}
+            <section className="space-y-1.5">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
+                Sample Flow
+              </label>
+              <Radio
+                checked={settings.sampleFlow === "data"}
+                onChange={() => onSettingsChange("sampleFlow", "data")}
+                label="Load sample data"
+                hint="Two MQL_SOURCE nodes — embedded_movies and comments — sitting side by side. Talk to Gemini to add lookup, filter, and group stages."
+              />
+              <Radio
+                checked={settings.sampleFlow === "vector"}
+                onChange={() => onSettingsChange("sampleFlow", "vector")}
+                label="Load sample flow"
+                hint="The pre-built 3-stage $vectorSearch pipeline over embedded_movies."
+              />
+              <Radio
+                checked={settings.sampleFlow === "none"}
+                onChange={() => onSettingsChange("sampleFlow", "none")}
+                label="No sample"
+                hint="Start with nothing loaded — empty canvas and empty results. The agent builds everything from scratch as you talk."
+              />
+            </section>
+
+            <GroupHeader>Display</GroupHeader>
+
+            {/* Layout */}
+            <section className="space-y-1.5">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
+                Layout
+              </label>
+              <Radio
+                checked={settings.layoutMode === "stacked"}
+                onChange={() => onSettingsChange("layoutMode", "stacked")}
+                label="Canvas on top, results below"
+                hint="Inside results, the document table is on the left, JSON view on the right."
+              />
+              <Radio
+                checked={settings.layoutMode === "side-by-side"}
+                onChange={() => onSettingsChange("layoutMode", "side-by-side")}
+                label="Canvas on the left, results on the right"
+                hint="Default. Inside results, the document table is on top and the JSON view (if enabled) below — each occupies half the height."
+              />
+            </section>
+
+            {/* Results panel toggles */}
+            <section className="space-y-1.5">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
+                Results Panel
+              </label>
+              <Check
+                checked={settings.showSchemaJson}
+                onChange={(v) => onSettingsChange("showSchemaJson", v)}
+                label="Show pipeline schema JSON tab"
+                hint="The schema view is useful for debugging; hide it for a cleaner demo."
+              />
+              <Check
+                checked={settings.showMflixCollections}
+                onChange={(v) => onSettingsChange("showMflixCollections", v)}
+                label="Show Mflix collections reference tab"
+                hint="Static catalog of sample_mflix collections (movies, comments, users, theaters, ...) with example documents — useful for showing what data is available."
+              />
+              <Check
+                checked={settings.showResultsJsonPane}
+                onChange={(v) => onSettingsChange("showResultsJsonPane", v)}
+                label="Show JSON pane next to document tree"
+                hint="Off by default. The tree already shows every field; turn this on if you want a side-by-side raw JSON view of all rows. Per-row 'View raw' on each card is always available."
+              />
+            </section>
+
+            {/* Chat panel — display section continues. */}
+            <section className="space-y-1.5">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
+                Chat Panel
+              </label>
+              <Check
+                checked={settings.enableTextInput}
+                onChange={(v) => onSettingsChange("enableTextInput", v)}
+                label="Enable text message input"
+                hint="Shows the text box + Send button below the agent chat. On by default — this is now the primary input."
+              />
+              <Check
+                checked={settings.enableVoiceMode}
+                onChange={(v) => onSettingsChange("enableVoiceMode", v)}
+                label="Enable voice mode"
+                hint="Adds the always-on mic, voice waveform, mute button, and transcription pipeline. Off by default — flip on to talk to the agent instead of typing."
+              />
+            </section>
+
+            {/* Voice group — only when voice mode is on. */}
+            {settings.enableVoiceMode && <GroupHeader>Voice</GroupHeader>}
 
             {/* Microphone — only when voice mode is on. */}
             {settings.enableVoiceMode && (
@@ -228,91 +397,9 @@ export default function TopBar({
               </section>
             )}
 
-            {/* Layout */}
-            <section className="space-y-1.5">
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
-                Layout
-              </label>
-              <Radio
-                checked={settings.layoutMode === "stacked"}
-                onChange={() => onSettingsChange("layoutMode", "stacked")}
-                label="Canvas on top, results below"
-                hint="Default. Inside results, the document table is on the left, JSON view on the right."
-              />
-              <Radio
-                checked={settings.layoutMode === "side-by-side"}
-                onChange={() => onSettingsChange("layoutMode", "side-by-side")}
-                label="Canvas on the left, results on the right"
-                hint="Inside results, the document table is on top and the JSON view is below — each occupies half the height."
-              />
-            </section>
-
-            {/* Sample flow */}
-            <section className="space-y-1.5">
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
-                Sample Flow
-              </label>
-              <Radio
-                checked={settings.sampleFlow === "data"}
-                onChange={() => onSettingsChange("sampleFlow", "data")}
-                label="Load sample data"
-                hint="Two MQL_SOURCE nodes — embedded_movies and comments — sitting side by side. Talk to Gemini to add lookup, filter, and group stages."
-              />
-              <Radio
-                checked={settings.sampleFlow === "vector"}
-                onChange={() => onSettingsChange("sampleFlow", "vector")}
-                label="Load sample flow"
-                hint="The pre-built 3-stage $vectorSearch pipeline over embedded_movies."
-              />
-              <Radio
-                checked={settings.sampleFlow === "none"}
-                onChange={() => onSettingsChange("sampleFlow", "none")}
-                label="No sample"
-                hint="Start with nothing loaded — empty canvas and empty results. The agent builds everything from scratch as you talk."
-              />
-            </section>
-
-            {/* Results panel */}
-            <section className="space-y-1.5">
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
-                Results Panel
-              </label>
-              <Check
-                checked={settings.showSchemaJson}
-                onChange={(v) => onSettingsChange("showSchemaJson", v)}
-                label="Show pipeline schema JSON tab"
-                hint="The schema view is useful for debugging; hide it for a cleaner demo."
-              />
-              <Check
-                checked={settings.showMflixCollections}
-                onChange={(v) => onSettingsChange("showMflixCollections", v)}
-                label="Show Mflix collections reference tab"
-                hint="Static catalog of sample_mflix collections (movies, comments, users, theaters, ...) with example documents — useful for showing what data is available."
-              />
-            </section>
-
-            {/* Chat panel */}
-            <section className="space-y-1.5">
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
-                Chat Panel
-              </label>
-              <Check
-                checked={settings.enableTextInput}
-                onChange={(v) => onSettingsChange("enableTextInput", v)}
-                label="Enable text message input"
-                hint="Shows the text box + Send button below the agent chat. On by default — this is now the primary input."
-              />
-              <Check
-                checked={settings.enableVoiceMode}
-                onChange={(v) => onSettingsChange("enableVoiceMode", v)}
-                label="Enable voice mode"
-                hint="Adds the always-on mic, voice waveform, mute button, and transcription pipeline. Off by default — flip on to talk to the agent instead of typing."
-              />
-            </section>
-
             {/* Transcription — voice-only. Hidden when voice mode is off. */}
             {settings.enableVoiceMode && (
-              <section className="space-y-1.5 border-t border-slate-200 pt-3">
+              <section className="space-y-1.5">
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
                   Voice Transcription
                 </label>
@@ -341,6 +428,63 @@ export default function TopBar({
         </div>
       )}
     </header>
+  );
+}
+
+/** Group divider in the Settings panel. Promotes scanning by chunking
+ *  related sections (Connection · Canvas · Display · Voice) under shared
+ *  headings. Render at the top of each group; the `<section>` blocks
+ *  underneath keep their own per-section labels for fine-grained items. */
+function GroupHeader({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="border-b border-slate-200 pb-1 pt-2 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400 first:pt-0">
+      {children}
+    </div>
+  );
+}
+
+/** Small connection pill rendered in the TopBar — colored dot + short
+ *  label, with the live state surfaced via `title` so hover gives details
+ *  without consuming header width. Errors get a red dot AND a visible "Err"
+ *  badge so users notice them at a glance. */
+function StatusPill({
+  label,
+  state,
+  detail,
+}: {
+  label: string;
+  state: ConnectionState;
+  detail?: string;
+}) {
+  const dotColor =
+    state === "connected"
+      ? "bg-emerald-300"
+      : state === "connecting"
+        ? "bg-amber-300 animate-pulse"
+        : state === "error"
+          ? "bg-rose-400"
+          : "bg-white/40";
+  const stateText =
+    state === "connected"
+      ? detail ?? "Connected"
+      : state === "connecting"
+        ? "Connecting…"
+        : state === "error"
+          ? detail ?? "Error"
+          : "Disconnected";
+  return (
+    <span
+      className="inline-flex h-9 items-center gap-1.5 rounded-full bg-white/10 px-2.5 text-[11px] font-medium"
+      title={`${label}: ${stateText}`}
+    >
+      <span className={cn("h-2 w-2 rounded-full", dotColor)} />
+      <span className="hidden md:inline">{label}</span>
+      {state === "error" && (
+        <span className="rounded bg-rose-500/30 px-1 text-[10px] font-semibold uppercase tracking-wider">
+          Err
+        </span>
+      )}
+    </span>
   );
 }
 

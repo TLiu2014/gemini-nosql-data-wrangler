@@ -1,10 +1,13 @@
 import {
   ArrowDownAZ,
+  Braces,
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
+  Download,
   ListOrdered,
+  ListTree,
 } from "lucide-react";
 import {
   createContext,
@@ -42,6 +45,10 @@ interface DocumentsTreeViewProps {
    *  ("original"). Rendered in the toolbar to the right. */
   keyOrderMode?: KeyOrderMode;
   onKeyOrderModeChange?: (mode: KeyOrderMode) => void;
+  /** Filename stem for the "Download JSON" button in the toolbar (no
+   *  extension; ".json" is appended automatically). When omitted the button
+   *  is hidden. */
+  downloadName?: string;
 }
 
 const COLLAPSED_KEY_PREVIEW_LIMIT = 4;
@@ -71,7 +78,26 @@ export default function DocumentsTreeView({
   onSelect,
   keyOrderMode,
   onKeyOrderModeChange,
+  downloadName,
 }: DocumentsTreeViewProps) {
+  const handleDownload = useCallback(() => {
+    if (!downloadName) return;
+    try {
+      const blob = new Blob([JSON.stringify(rows, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${downloadName}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      /* Browser blocked clipboard / blob — silent ignore. */
+    }
+  }, [rows, downloadName]);
   const nodesRef = useRef(new Set<NodeApi>());
 
   const register = useCallback((api: NodeApi) => {
@@ -118,6 +144,17 @@ export default function DocumentsTreeView({
             <ChevronsDownUp className="h-3 w-3" />
             Collapse all
           </button>
+          {downloadName && (
+            <button
+              type="button"
+              onClick={handleDownload}
+              title={`Download all ${rows.length} document${rows.length === 1 ? "" : "s"} as JSON`}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-slate-600 hover:bg-slate-200/70"
+            >
+              <Download className="h-3 w-3" />
+              Download JSON
+            </button>
+          )}
           {keyOrderMode && onKeyOrderModeChange && (
             <div className="ml-auto flex items-center gap-0.5 rounded border border-slate-200 bg-white p-0.5">
               <button
@@ -182,6 +219,10 @@ function DocumentCard({
   onToggleSelect: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  // Per-row view toggle: "tree" (default) or "raw" (pretty-printed JSON).
+  // Local to each card — clicking the toggle on one card doesn't affect
+  // siblings. The button is only meaningful when the card is expanded.
+  const [viewMode, setViewMode] = useState<"tree" | "raw">("tree");
   useRegisterBulkNode(setExpanded);
   const indexLabel = `#${index}`;
 
@@ -225,14 +266,51 @@ function DocumentCard({
             <ValuePreview value={row} />
           )}
         </span>
+        {expanded && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setViewMode((m) => (m === "tree" ? "raw" : "tree"));
+            }}
+            title={viewMode === "tree" ? "View raw JSON for this row" : "Back to tree view"}
+            className="ml-1 inline-flex shrink-0 items-center gap-1 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-600 hover:bg-slate-100"
+          >
+            {viewMode === "tree" ? (
+              <>
+                <Braces className="h-3 w-3" />
+                Raw
+              </>
+            ) : (
+              <>
+                <ListTree className="h-3 w-3" />
+                Tree
+              </>
+            )}
+          </button>
+        )}
       </div>
       {expanded && (
         <div className="pb-2 pl-7 pr-3">
-          <TreeNode value={row} depth={0} initialExpanded />
+          {viewMode === "raw" ? (
+            <pre className="max-h-[60vh] overflow-auto rounded bg-slate-50 p-2 text-[11px] leading-snug text-slate-800">
+              {safeStringify(row)}
+            </pre>
+          ) : (
+            <TreeNode value={row} depth={0} initialExpanded />
+          )}
         </div>
       )}
     </div>
   );
+}
+
+export function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 function summarizeRow(row: unknown): string {
@@ -247,8 +325,9 @@ function summarizeRow(row: unknown): string {
 }
 
 /** Recursive tree node. Strings/numbers/etc render inline; objects/arrays
- *  recurse with their own collapse state. */
-function TreeNode({
+ *  recurse with their own collapse state. Exported so other result-style
+ *  views (e.g. the Mflix collections tab) can reuse the same rendering. */
+export function TreeNode({
   value,
   depth,
   initialExpanded = false,

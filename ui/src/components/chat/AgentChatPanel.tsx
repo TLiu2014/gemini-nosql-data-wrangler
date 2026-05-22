@@ -3,6 +3,7 @@ import {
   ChevronRight,
   Loader2,
   Mic,
+  MicOff,
   Send,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -163,11 +164,37 @@ export function AgentChatPanel({
                 speaking
               </span>
             )}
-            {voice.muted && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500">
-                muted
-              </span>
-            )}
+            <button
+              type="button"
+              onClick={() => voice.setMuted(!voice.muted)}
+              disabled={voice.state === "error"}
+              title={
+                voice.state === "error"
+                  ? voice.errorDetail ?? "Microphone unavailable"
+                  : voice.muted
+                    ? "Unmute mic"
+                    : "Mute mic"
+              }
+              className={cn(
+                "ml-auto inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors",
+                voice.muted
+                  ? "bg-rose-50 text-rose-700 hover:bg-rose-100"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200",
+                "disabled:cursor-not-allowed disabled:opacity-50",
+              )}
+            >
+              {voice.muted ? (
+                <>
+                  <MicOff className="h-3 w-3" />
+                  Unmute
+                </>
+              ) : (
+                <>
+                  <Mic className="h-3 w-3" />
+                  Mute
+                </>
+              )}
+            </button>
           </div>
           <AudioVisualizer
             analyser={voice.analyser.current}

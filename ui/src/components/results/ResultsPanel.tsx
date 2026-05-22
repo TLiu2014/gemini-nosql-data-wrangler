@@ -1,12 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Database, ListTree, Loader2, RefreshCw } from "lucide-react";
+import {
+  Braces,
+  ChevronDown,
+  ChevronRight,
+  Database,
+  ListTree,
+  Loader2,
+  RefreshCw,
+} from "lucide-react";
 import { JsonView } from "@/components/views/JsonView";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/Tabs";
 import { MFLIX_COLLECTIONS } from "@/samples/mflixCollections";
 import { useDragResize } from "@/hooks/useDragResize";
 import { cn } from "@/lib/Utils";
 import { normalizeRowKeyOrder } from "@/lib/normalizeRows";
-import DocumentsTreeView, { type KeyOrderMode } from "./DocumentsTreeView";
+import DocumentsTreeView, {
+  TreeNode,
+  safeStringify,
+  type KeyOrderMode,
+} from "./DocumentsTreeView";
 import type { PipelineSchema } from "@/Schema";
 import type { MflixCollectionsMessage, ResultsMessage } from "@/types/ws";
 
@@ -16,6 +28,11 @@ interface ResultsPanelProps {
   showSchemaJson: boolean;
   /** When true, show a "Mflix collections" reference tab listing the sample_mflix collections. */
   showMflixCollections: boolean;
+  /** When true, stage-result tabs show the side-by-side JSON pane next to
+   *  the document tree. When false (default), only the tree is shown — the
+   *  per-card "View raw" toggle and the toolbar Download JSON button cover
+   *  single-doc inspection and the export workflow. */
+  showResultsJsonPane: boolean;
   /** Most-recent live refresh from Atlas (overrides the static catalog); null until requested. */
   mflixRefresh?: MflixCollectionsMessage | null;
   /** Refresh request is in flight. */
@@ -51,6 +68,7 @@ export default function ResultsPanel({
   results,
   showSchemaJson,
   showMflixCollections,
+  showResultsJsonPane,
   mflixRefresh,
   mflixRefreshing,
   onRefreshMflix,
@@ -204,13 +222,22 @@ export default function ResultsPanel({
               the <span className="not-italic font-mono text-slate-500">{t.label}</span> stage.
             </div>
           ) : (
-            <DocumentsSplitView
-              rows={t.rows ?? []}
-              label={t.label}
-              orientation={splitOrientation}
-              keyOrderMode={keyOrderMode}
-              onKeyOrderModeChange={setKeyOrderMode}
-            />
+            showResultsJsonPane ? (
+              <DocumentsSplitView
+                rows={t.rows ?? []}
+                label={t.label}
+                orientation={splitOrientation}
+                keyOrderMode={keyOrderMode}
+                onKeyOrderModeChange={setKeyOrderMode}
+              />
+            ) : (
+              <DocumentsTreeOnlyView
+                rows={t.rows ?? []}
+                label={t.label}
+                keyOrderMode={keyOrderMode}
+                onKeyOrderModeChange={setKeyOrderMode}
+              />
+            )
           )}
         </TabsContent>
       ))}
@@ -222,7 +249,6 @@ export default function ResultsPanel({
             refreshing={!!mflixRefreshing}
             onRefresh={onRefreshMflix}
             atlasConnected={!!atlasConnected}
-            orientation={splitOrientation}
           />
         </TabsContent>
       )}
@@ -250,6 +276,48 @@ export default function ResultsPanel({
         </TabsContent>
       )}
     </Tabs>
+  );
+}
+
+/**
+ * Tree-only stage-result view (no JSON pane). Used by default — the tree
+ * already shows every field, and the toolbar's Download button + per-card
+ * "View raw" toggle cover the export and single-doc inspection workflows
+ * that the JSON pane used to handle. Users who want the side-by-side JSON
+ * back can flip `showResultsJsonPane` in Settings to re-enable
+ * `DocumentsSplitView`.
+ */
+function DocumentsTreeOnlyView({
+  rows,
+  label,
+  keyOrderMode,
+  onKeyOrderModeChange,
+}: {
+  rows: unknown[];
+  label: string;
+  keyOrderMode: KeyOrderMode;
+  onKeyOrderModeChange: (mode: KeyOrderMode) => void;
+}) {
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  useEffect(() => {
+    setSelectedIndex(null);
+  }, [rows]);
+
+  const displayRows = useMemo(
+    () =>
+      keyOrderMode === "normalized" ? normalizeRowKeyOrder(rows) : rows,
+    [rows, keyOrderMode],
+  );
+
+  return (
+    <DocumentsTreeView
+      rows={displayRows}
+      selectedIndex={selectedIndex}
+      onSelect={setSelectedIndex}
+      keyOrderMode={keyOrderMode}
+      onKeyOrderModeChange={onKeyOrderModeChange}
+      downloadName={label}
+    />
   );
 }
 
@@ -349,6 +417,7 @@ function DocumentsSplitView({
           onSelect={setSelectedIndex}
           keyOrderMode={keyOrderMode}
           onKeyOrderModeChange={onKeyOrderModeChange}
+          downloadName={label}
         />
       </div>
 
@@ -381,8 +450,11 @@ function DocumentsSplitView({
 }
 
 /**
- * Reference view: list of `sample_mflix` collections on the left, example
- * document (with shape and types) for the selected collection on the right.
+ * Reference view: a vertical list of `sample_mflix` collections. Each
+ * collection is a card with the collection name + count + description in
+ * the header; click to expand and reveal its example document rendered as
+ * a tree (or raw JSON via the per-card toggle). Same UI grammar as the
+ * stage-result tabs, no side-by-side JSON pane.
  *
  * Two sources of truth: a static fallback catalog (`MFLIX_COLLECTIONS`) that
  * always renders, and an optional `refresh` payload from a live Atlas query.
@@ -396,31 +468,12 @@ function MflixCollectionsView({
   refreshing,
   onRefresh,
   atlasConnected,
-  orientation = "horizontal",
 }: {
   refresh: MflixCollectionsMessage | null;
   refreshing: boolean;
   onRefresh?: () => void;
   atlasConnected: boolean;
-  orientation?: "horizontal" | "vertical";
 }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [selectedIndex, setSelectedIndex] = useState(0);
-
-  const split = useDragResize<number>(
-    SPLIT_DEFAULT,
-    orientation === "horizontal" ? "x" : "y",
-    (e) => {
-      const rect = containerRef.current?.getBoundingClientRect();
-      if (!rect) return SPLIT_DEFAULT;
-      const pct =
-        orientation === "horizontal"
-          ? ((e.clientX - rect.left) / rect.width) * 100
-          : ((e.clientY - rect.top) / rect.height) * 100;
-      return Math.max(SPLIT_MIN, Math.min(SPLIT_MAX, pct));
-    },
-  );
-
   // Build the merged list each render. Cheap (<10 entries) so no memo needed.
   const items = useMemo(() => {
     const liveByName = new Map(
@@ -465,9 +518,6 @@ function MflixCollectionsView({
     }
     return merged;
   }, [refresh]);
-
-  const safeIndex = Math.min(selectedIndex, Math.max(items.length - 1, 0));
-  const selected = items[safeIndex];
 
   const refreshDisabled = !atlasConnected || refreshing || !onRefresh;
   const refreshTitle = !atlasConnected
@@ -517,116 +567,126 @@ function MflixCollectionsView({
         </div>
       )}
 
-      <div
-        ref={containerRef}
-        className={cn(
-          "flex min-h-0 flex-1 min-w-0",
-          orientation === "horizontal" ? "flex-row" : "flex-col",
+      <div className="min-h-0 flex-1 overflow-auto bg-white">
+        {items.length === 0 ? (
+          <div className="flex h-full items-center justify-center text-xs italic text-slate-400">
+            No collections found.
+          </div>
+        ) : (
+          items.map((c) => <MflixCollectionCard key={c.name} item={c} />)
         )}
-      >
-        <div
-          className="flex min-h-0 min-w-0 flex-col bg-white"
-          style={
-            orientation === "horizontal"
-              ? { width: `${split.value}%` }
-              : { height: `${split.value}%` }
-          }
-        >
-          <ul className="min-h-0 flex-1 overflow-auto">
-            {items.map((c, i) => {
-              const isActive = i === safeIndex;
-              return (
-                <li key={c.name}>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedIndex(i)}
-                    className={cn(
-                      "flex w-full flex-col items-start gap-0.5 border-b border-slate-100 px-3 py-2 text-left transition-colors hover:bg-slate-50",
-                      isActive && "bg-blue-50/70 hover:bg-blue-50",
-                    )}
-                  >
-                    <div className="flex w-full items-baseline justify-between gap-2">
-                      <span
-                        className={cn(
-                          "font-mono text-[12px] font-semibold",
-                          isActive ? "text-blue-700" : "text-slate-800",
-                        )}
-                      >
-                        {c.name}
-                      </span>
-                      <span
-                        className={cn(
-                          "shrink-0 rounded px-1 py-0.5 font-mono text-[10px]",
-                          c.origin === "static"
-                            ? "bg-slate-100 text-slate-500"
-                            : "bg-emerald-50 text-emerald-700",
-                        )}
-                        title={
-                          c.origin === "static"
-                            ? "Static count — refresh to get the live number."
-                            : "Live count from Atlas."
-                        }
-                      >
-                        {c.origin === "static" ? "~" : ""}
-                        {c.estimatedCount.toLocaleString()}
-                      </span>
-                    </div>
-                    <span className="text-[11px] leading-snug text-slate-500">
-                      {c.description}
-                    </span>
-                    {c.error && (
-                      <span className="text-[10px] text-amber-700">
-                        {c.error}
-                      </span>
-                    )}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-
-        {/* Drag handle */}
-        <div
-          onMouseDown={split.onMouseDown}
-          className={cn(
-            "shrink-0 bg-slate-200 transition-colors hover:bg-blue-400",
-            orientation === "horizontal"
-              ? "w-1 cursor-col-resize"
-              : "h-1 cursor-row-resize",
-          )}
-          title="Drag to resize"
-        />
-
-        <div
-          className="flex min-h-0 min-w-0 flex-col"
-          style={
-            orientation === "horizontal"
-              ? { width: `${100 - split.value}%` }
-              : { height: `${100 - split.value}%` }
-          }
-        >
-          {selected ? (
-            <JsonView
-              data={selected.exampleDocument}
-              title={`${refresh?.database ?? "sample_mflix"}.${selected.name}`}
-              info={
-                <>
-                  example document ·{" "}
-                  {selected.origin === "static" ? "~" : ""}
-                  {selected.estimatedCount.toLocaleString()} total
-                </>
-              }
-              downloadName={`mflix-${selected.name}-example`}
-              emptyHint="No example available."
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center text-xs italic text-slate-400">
-              No collections found.
-            </div>
-          )}
-        </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * One collapsible card per Mflix collection. Mirrors the DocumentCard
+ * grammar from the stage-result tabs: click the header to expand, then
+ * toggle between tree and raw JSON for the example document. Headers
+ * remain visible at all times so users can scan the catalog quickly.
+ */
+function MflixCollectionCard({
+  item,
+}: {
+  item: {
+    name: string;
+    estimatedCount: number;
+    description: string;
+    exampleDocument: unknown;
+    origin: "static" | "live" | "merged";
+    error?: string;
+  };
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [viewMode, setViewMode] = useState<"tree" | "raw">("tree");
+  const hasExample = item.exampleDocument != null;
+
+  return (
+    <div className="border-b border-slate-100">
+      <div
+        onClick={() => setExpanded((v) => !v)}
+        className="flex cursor-pointer items-start gap-1.5 px-3 py-2 hover:bg-slate-50"
+      >
+        <span className="mt-0.5 text-slate-400">
+          {expanded ? (
+            <ChevronDown className="h-3 w-3" />
+          ) : (
+            <ChevronRight className="h-3 w-3" />
+          )}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex w-full items-baseline justify-between gap-2">
+            <span className="truncate font-mono text-[12px] font-semibold text-slate-800">
+              {item.name}
+            </span>
+            <span
+              className={cn(
+                "shrink-0 rounded px-1 py-0.5 font-mono text-[10px]",
+                item.origin === "static"
+                  ? "bg-slate-100 text-slate-500"
+                  : "bg-emerald-50 text-emerald-700",
+              )}
+              title={
+                item.origin === "static"
+                  ? "Static count — refresh to get the live number."
+                  : "Live count from Atlas."
+              }
+            >
+              {item.origin === "static" ? "~" : ""}
+              {item.estimatedCount.toLocaleString()}
+            </span>
+          </div>
+          <div className="mt-0.5 text-[11px] leading-snug text-slate-500">
+            {item.description}
+          </div>
+          {item.error && (
+            <div className="mt-0.5 text-[10px] text-amber-700">{item.error}</div>
+          )}
+        </div>
+        {expanded && hasExample && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setViewMode((m) => (m === "tree" ? "raw" : "tree"));
+            }}
+            title={
+              viewMode === "tree"
+                ? "View raw JSON for this example"
+                : "Back to tree view"
+            }
+            className="ml-1 inline-flex shrink-0 items-center gap-1 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-600 hover:bg-slate-100"
+          >
+            {viewMode === "tree" ? (
+              <>
+                <Braces className="h-3 w-3" />
+                Raw
+              </>
+            ) : (
+              <>
+                <ListTree className="h-3 w-3" />
+                Tree
+              </>
+            )}
+          </button>
+        )}
+      </div>
+      {expanded && (
+        <div className="pb-2 pl-7 pr-3 font-mono text-[12px] leading-relaxed">
+          {!hasExample ? (
+            <div className="text-[11px] italic text-slate-400">
+              No example available.
+            </div>
+          ) : viewMode === "raw" ? (
+            <pre className="max-h-[60vh] overflow-auto rounded bg-slate-50 p-2 text-[11px] leading-snug text-slate-800">
+              {safeStringify(item.exampleDocument)}
+            </pre>
+          ) : (
+            <TreeNode value={item.exampleDocument} depth={0} initialExpanded />
+          )}
+        </div>
+      )}
     </div>
   );
 }

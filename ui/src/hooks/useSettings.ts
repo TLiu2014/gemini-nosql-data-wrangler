@@ -23,6 +23,14 @@ export interface Settings {
   showSchemaJson: boolean;
   /** Show the "Mflix collections" reference tab in the results panel. */
   showMflixCollections: boolean;
+  /**
+   * Show the side-by-side JSON pane next to the document tree on stage-result
+   * tabs. Off by default — the tree view already shows every field explicitly
+   * and the per-card "View raw" toggle covers single-document inspection.
+   * Mflix collections and Pipeline schema tabs always show JSON (it's their
+   * primary view) and aren't affected by this setting.
+   */
+  showResultsJsonPane: boolean;
   /** Show the text-message input box below the chat timeline. */
   enableTextInput: boolean;
   /**
@@ -68,6 +76,7 @@ const DEFAULT_SETTINGS: Settings = {
   sampleFlow: "none",
   showSchemaJson: false,
   showMflixCollections: true,
+  showResultsJsonPane: false,
   enableTextInput: true,
   enableVoiceMode: false,
   languageMode: "english",
