@@ -469,16 +469,82 @@ export class AgentLoop {
       };
     }
 
-    // Build one $facet branch per canvas stage. We use synthetic keys
-    // `s0`, `s1`, ... so we can map back to stage_ids by index.
+    // Fast path: one $facet aggregate fetches every stage's preview in a
+    // single round-trip. Slow path (fallback): if $facet rejects (e.g.
+    // because one prefix is malformed, or the result blows the 16MB
+    // per-branch ceiling), run N sequential prefix-aggregate calls — that
+    // way the stages that DO work still populate.
     const facetBranches: Record<string, unknown[]> = {};
     for (let i = 0; i < stageIds.length; i++) {
       const prefix = pipeline.slice(0, i);
       facetBranches[`s${i}`] = [...prefix, { $limit: previewLimit }];
     }
-
     const facetPipeline = [{ $facet: facetBranches }];
 
+    const facetResult = await this.tryFacetPipeline(
+      database,
+      collection,
+      facetPipeline,
+    );
+    let perStageRows: Map<string, unknown[]>;
+    let usedFallback = false;
+
+    if (facetResult.ok) {
+      perStageRows = new Map();
+      for (let i = 0; i < stageIds.length; i++) {
+        const branch = facetResult.facetDoc[`s${i}`];
+        perStageRows.set(stageIds[i], Array.isArray(branch) ? branch : []);
+      }
+    } else {
+      usedFallback = true;
+      console.warn(
+        `[agent] run_pipeline: $facet failed (${facetResult.errorMessage}); falling back to sequential prefix aggregates`,
+      );
+      perStageRows = await this.runSequentialPrefixAggregates(
+        database,
+        collection,
+        pipeline,
+        stageIds,
+        previewLimit,
+      );
+    }
+
+    // Dispatch preview rows per stage. Track counts so we can echo a
+    // summary back to the agent without including the full data.
+    const previewed: Array<{ stageId: string; rows: number }> = [];
+    for (const stageId of stageIds) {
+      const rows = perStageRows.get(stageId) ?? [];
+      this.opts.client.sendResults({ stageId, rows });
+      previewed.push({ stageId, rows: rows.length });
+    }
+
+    // Return the final stage's rows to the agent so it can summarize. Cap
+    // to a small slice so we don't blow the function-response budget on
+    // wide documents.
+    const finalRows = perStageRows.get(stageIds[stageIds.length - 1]) ?? [];
+    const SUMMARY_ROW_CAP = 5;
+    return {
+      response: {
+        ok: true,
+        previewed,
+        execution_mode: usedFallback ? "sequential_fallback" : "facet",
+        final_stage_id: stageIds[stageIds.length - 1],
+        final_row_count: finalRows.length,
+        final_rows_sample: finalRows.slice(0, SUMMARY_ROW_CAP),
+      },
+    };
+  }
+
+  /** Run the consolidated $facet aggregate. Returns ok+facetDoc or an
+   *  error message; never throws so the caller can choose to fall back. */
+  private async tryFacetPipeline(
+    database: string,
+    collection: string,
+    facetPipeline: unknown[],
+  ): Promise<
+    | { ok: true; facetDoc: Record<string, unknown> }
+    | { ok: false; errorMessage: string }
+  > {
     let raw: unknown;
     try {
       raw = await this.opts.mcp.callTool("aggregate", {
@@ -487,46 +553,61 @@ export class AgentLoop {
         pipeline: facetPipeline,
       });
     } catch (err) {
-      return { response: { error: String(err) }, isError: true };
+      return { ok: false, errorMessage: String(err) };
     }
-
     const cleaned = stripHeavyFieldsFromMcpResult(raw);
     if ((cleaned as { isError?: boolean })?.isError) {
-      return { response: { result: cleaned }, isError: true };
+      const text = JSON.stringify(cleaned).slice(0, 200);
+      return { ok: false, errorMessage: `MCP isError: ${text}` };
     }
-
     const docs = extractDocsFromMcpAggregate(cleaned);
-    // $facet returns a single doc whose keys are the branch names.
-    const facetDoc = (docs[0] ?? {}) as Record<string, unknown>;
-
-    // Dispatch preview rows per stage. Track counts so we can echo a
-    // summary back to the agent without including the full data.
-    const previewed: Array<{ stageId: string; rows: number }> = [];
-    for (let i = 0; i < stageIds.length; i++) {
-      const stageId = stageIds[i];
-      const branch = facetDoc[`s${i}`];
-      const rows = Array.isArray(branch) ? branch : [];
-      this.opts.client.sendResults({ stageId, rows });
-      previewed.push({ stageId, rows: rows.length });
+    const facetDoc = (docs[0] ?? null) as Record<string, unknown> | null;
+    if (!facetDoc) {
+      return { ok: false, errorMessage: "no doc returned from $facet" };
     }
+    return { ok: true, facetDoc };
+  }
 
-    // Return the final stage's rows to the agent so it can summarize. Cap
-    // to a small slice so we don't blow the function-response budget on
-    // wide documents.
-    const finalIdx = stageIds.length - 1;
-    const finalRows = Array.isArray(facetDoc[`s${finalIdx}`])
-      ? (facetDoc[`s${finalIdx}`] as unknown[])
-      : [];
-    const SUMMARY_ROW_CAP = 5;
-    return {
-      response: {
-        ok: true,
-        previewed,
-        final_stage_id: stageIds[finalIdx],
-        final_row_count: finalRows.length,
-        final_rows_sample: finalRows.slice(0, SUMMARY_ROW_CAP),
-      },
-    };
+  /** Fallback: run N prefix-aggregate calls in parallel. If any individual
+   *  prefix fails we still return whatever the others produced — better
+   *  than a turn where every tab stays placeholder. */
+  private async runSequentialPrefixAggregates(
+    database: string,
+    collection: string,
+    pipeline: unknown[],
+    stageIds: string[],
+    previewLimit: number,
+  ): Promise<Map<string, unknown[]>> {
+    const out = new Map<string, unknown[]>();
+    const promises = stageIds.map(async (stageId, i) => {
+      const prefix = pipeline.slice(0, i);
+      const prefixPipeline = [...prefix, { $limit: previewLimit }];
+      try {
+        const raw = await this.opts.mcp.callTool("aggregate", {
+          database,
+          collection,
+          pipeline: prefixPipeline,
+        });
+        const cleaned = stripHeavyFieldsFromMcpResult(raw);
+        if ((cleaned as { isError?: boolean })?.isError) {
+          console.warn(
+            `[agent] fallback prefix aggregate for ${stageId} (idx ${i}) returned isError`,
+          );
+          out.set(stageId, []);
+          return;
+        }
+        const docs = extractDocsFromMcpAggregate(cleaned);
+        out.set(stageId, docs);
+      } catch (err) {
+        console.warn(
+          `[agent] fallback prefix aggregate for ${stageId} (idx ${i}) threw:`,
+          err,
+        );
+        out.set(stageId, []);
+      }
+    });
+    await Promise.all(promises);
+    return out;
   }
 
   private executeCustomTool(

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
+import { Check, Download, Share2 } from "lucide-react";
 import { TransformationFlow } from "@/components/flow/TransformationFlow";
 import TopBar from "@/components/voice/TopBar";
 import {
@@ -31,6 +32,11 @@ import type {
   ResultsMessage,
   ServerMessage,
 } from "@/types/ws";
+import {
+  decodeSchemaFromFragment,
+  encodeSchemaToFragment,
+} from "@/lib/shareUrl";
+import { downloadMqlScript, stagesToMqlScript } from "@/lib/exportMql";
 
 // Connection status + Connect button moved to the TopBar, so the chat
 // sidebar no longer needs to host them. The chat panel still needs enough
@@ -272,13 +278,24 @@ function normalizeAgentSchema(raw: unknown): PipelineSchema | null {
 export default function Workspace() {
   const { settings, update: updateSetting } = useSettings();
 
-  const initialSchema =
-    settings.sampleFlow === "data"
-      ? SAMPLE_MFLIX_DEMO_FLOW
-      : settings.sampleFlow === "vector"
-        ? SAMPLE_MFLIX_VECTOR_FLOW
-        : null;
+  // Initial schema priority:
+  //   1. URL fragment (#s1=…)  — shared canvas link, highest priority so a
+  //      teammate's link wins over the local sample-flow setting.
+  //   2. Settings.sampleFlow    — local "load this demo on boot" preference.
+  //   3. null                   — empty canvas (default for fresh sessions).
+  const initialSchema = useMemo(() => {
+    if (typeof window !== "undefined") {
+      const fromUrl = decodeSchemaFromFragment(window.location.hash);
+      if (fromUrl) return normalizeAgentSchema(fromUrl);
+    }
+    if (settings.sampleFlow === "data") return SAMPLE_MFLIX_DEMO_FLOW;
+    if (settings.sampleFlow === "vector") return SAMPLE_MFLIX_VECTOR_FLOW;
+    return null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [schema, setSchema] = useState<PipelineSchema | null>(initialSchema);
+  // Transient confirmation chip for the "Share canvas" button.
+  const [shareCopied, setShareCopied] = useState(false);
   const [results, setResults] = useState<ResultsMessage[]>([]);
   const [activeResultsTab, setActiveResultsTab] = useState<string | null>(null);
   const [mflixRefresh, setMflixRefresh] =
@@ -719,6 +736,46 @@ export default function Workspace() {
     seenResultStageIdsRef.current.clear();
   }, [settings.sampleFlow]);
 
+  // Mirror the canvas state into the URL fragment so users can copy-paste
+  // the page URL to share a pipeline. Debounced to ~400 ms so the rapid
+  // `update_canvas` calls an agent makes mid-turn don't burn the browser's
+  // history API or thrash the address bar. Fragments never leave the
+  // client (browsers don't send the hash to the server), so there's no BE
+  // dependency or privacy concern.
+  const lastWrittenFragment = useRef<string>("");
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const timer = window.setTimeout(() => {
+      const desired = schema ? encodeSchemaToFragment(schema) : "";
+      if (desired === lastWrittenFragment.current) return;
+      lastWrittenFragment.current = desired;
+      // Use replaceState — we don't want every canvas edit to add a back-
+      // button entry.
+      const target = `${window.location.pathname}${window.location.search}${desired}`;
+      window.history.replaceState(null, "", target);
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [schema]);
+
+  const handleShareCanvas = useCallback(async () => {
+    if (!schema) return;
+    try {
+      const url = window.location.href;
+      await navigator.clipboard.writeText(url);
+      setShareCopied(true);
+      window.setTimeout(() => setShareCopied(false), 1800);
+    } catch {
+      /* clipboard unavailable — fall through silently. */
+    }
+  }, [schema]);
+
+  const handleExportMql = useCallback(() => {
+    if (!schema) return;
+    const body = stagesToMqlScript(schema);
+    const name = schema.pipeline?.name || "pipeline";
+    downloadMqlScript(name, body);
+  }, [schema]);
+
   // Connection state surfaced to the TopBar. The sidebar no longer hosts
   // a StatusBar — Atlas/Gemini status pills + the Connect button live in
   // the header now, freeing the chat panel for its actual purpose.
@@ -760,6 +817,8 @@ export default function Workspace() {
               onSendText={handleSendText}
               busy={agentBusy}
               connected={ws.state === "connected"}
+              atlasConnected={atlasConnection === "connected"}
+              atlasState={atlasConnection}
               enableTextInput={settings.enableTextInput}
               voiceMode={voiceMode}
               voice={{
@@ -805,6 +864,39 @@ export default function Workspace() {
                   onShowOutput={setActiveResultsTab}
                 />
               </ReactFlowProvider>
+              {/* Share + Export floating toolbar on the canvas. Only rendered
+                  when there's actually something to share/export. */}
+              {schema && schema.stages.length > 0 && (
+                <div className="pointer-events-none absolute right-3 top-3 z-20 flex gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleShareCanvas}
+                    title="Copy a shareable URL — pipeline state lives in the URL fragment, no backend required."
+                    className="pointer-events-auto inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-200 bg-white/95 px-2.5 text-xs font-medium text-slate-700 shadow-md backdrop-blur hover:bg-slate-50"
+                  >
+                    {shareCopied ? (
+                      <>
+                        <Check className="h-3.5 w-3.5 text-emerald-600" />
+                        <span className="text-emerald-700">Link copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Share2 className="h-3.5 w-3.5" />
+                        Share canvas
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportMql}
+                    title="Download this pipeline as a MongoDB shell script (mongosh-ready)."
+                    className="pointer-events-auto inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-200 bg-white/95 px-2.5 text-xs font-medium text-slate-700 shadow-md backdrop-blur hover:bg-slate-50"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    Export MQL
+                  </button>
+                </div>
+              )}
               {!schema && (
                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                   <div className="rounded-lg bg-white/80 px-6 py-4 text-center text-sm text-slate-500 ring-1 ring-slate-200 backdrop-blur">

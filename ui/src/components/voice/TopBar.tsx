@@ -95,11 +95,18 @@ export default function TopBar({
 
       <div className="flex items-center gap-2">
         {saveNotice && (
+          // `tfu-save-notice` runs a one-shot slide-in + soft pulse so the
+          // chip catches the eye on appearance instead of sitting passively
+          // alongside the status pills. Rendered on every viewport (no `md:`
+          // gate) so the user always gets save feedback.
           <span
-            className="hidden items-center gap-1 rounded-full bg-white/20 px-2.5 py-1 text-[11px] font-medium md:inline-flex"
+            key={saveNotice}
+            className="tfu-save-notice inline-flex items-center gap-1 rounded-full bg-white/25 px-2.5 py-1 text-[11px] font-medium"
             title={saveNotice}
           >
-            ✓ {saveNotice}
+            <span aria-hidden>✓</span>
+            <span className="hidden truncate sm:inline">{saveNotice}</span>
+            <span className="sm:hidden">Saved</span>
           </span>
         )}
         <StatusPill
@@ -273,22 +280,22 @@ export default function TopBar({
                 Sample Flow
               </label>
               <Radio
+                checked={settings.sampleFlow === "none"}
+                onChange={() => onSettingsChange("sampleFlow", "none")}
+                label="No sample (default)"
+                hint="Start with nothing loaded — empty canvas and empty results. The agent builds everything from scratch as you talk. Recommended for live demos."
+              />
+              <Radio
                 checked={settings.sampleFlow === "data"}
                 onChange={() => onSettingsChange("sampleFlow", "data")}
-                label="Load sample data"
-                hint="Two MQL_SOURCE nodes — embedded_movies and comments — sitting side by side. Talk to Gemini to add lookup, filter, and group stages."
+                label="Two-source starter"
+                hint="Two MQL_SOURCE nodes — embedded_movies and comments — sitting side by side. Useful warm-up for the join + branching demo."
               />
               <Radio
                 checked={settings.sampleFlow === "vector"}
                 onChange={() => onSettingsChange("sampleFlow", "vector")}
-                label="Load sample flow"
-                hint="The pre-built 3-stage $vectorSearch pipeline over embedded_movies."
-              />
-              <Radio
-                checked={settings.sampleFlow === "none"}
-                onChange={() => onSettingsChange("sampleFlow", "none")}
-                label="No sample"
-                hint="Start with nothing loaded — empty canvas and empty results. The agent builds everything from scratch as you talk."
+                label="Nolan filmography starter"
+                hint="Pre-built 3-stage pipeline matching Demo 3's opening state: source → $match directors → $project. Extend live by asking the agent to group by year, sort, etc."
               />
             </section>
 

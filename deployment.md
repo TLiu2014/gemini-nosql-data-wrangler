@@ -39,26 +39,27 @@ project end-to-end:
    Action / Fantasy results. The system instruction must mention this so the
    agent doesn't promise, say, a romcom search against this collection.
 
-### 1.4 Create the Atlas Vector Search index
-The `embedded_movies` collection ships without a vector index — you must create
-one before `$vectorSearch` will work.
+### 1.4 (Optional) Atlas Vector Search index
+This deployment does **not** require an Atlas Vector Search index. The system
+instruction routes conceptual / "vibes-based" queries to `$match` with the
+`$text` operator on `sample_mflix.movies` (which already has a text index on
+`cast`, `fullplot`, `genres`, `title`). The visual `MQL_VECTOR_SEARCH` node
+on the canvas is a UI choice — the execution underneath is text search.
 
-1. In Atlas, open `sample_mflix` → `embedded_movies` → **Search Indexes** tab → **Create Search Index**.
-2. Choose **Atlas Vector Search** → **JSON Editor**. Name the index `plot_vector_index`.
-3. Paste the following definition:
-   ```json
-   {
-     "fields": [
-       {
-         "type": "vector",
-         "path": "plot_embedding",
-         "numDimensions": 1536,
-         "similarity": "cosine"
-       }
-     ]
-   }
-   ```
-4. Click **Create** and wait for the index status to show **Active**.
+Why not real `$vectorSearch`? The pre-loaded `plot_embedding` field on
+`embedded_movies` is a 1536-dim OpenAI ada-002 vector. To query against it
+the client would need to generate ada-002 embeddings at request time, which
+requires an OpenAI key we don't ship with the demo. Gemini's
+`text-embedding-004` is 768-dim and lives in a different vector space, so
+it isn't a drop-in substitute. See `dev-log.md` for the longer story.
+
+If you do want to extend the project to call live `$vectorSearch`, create the
+index in Atlas (`sample_mflix.embedded_movies` → Search Indexes → Atlas
+Vector Search → JSON editor), name it `plot_vector_index`, and use
+`numDimensions: 1536, similarity: "cosine", path: "plot_embedding"`. Then
+add a server-side `embed_text` tool that calls ada-002 and update the
+system instruction to route vibes queries to `$vectorSearch` with the
+returned vector.
 
 ### 1.5 Grab the connection string
 1. Atlas → **Database** → **Connect** → **Drivers** → copy the URI.

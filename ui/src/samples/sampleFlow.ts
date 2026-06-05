@@ -57,17 +57,24 @@ export const SAMPLE_MFLIX_DEMO_FLOW: PipelineSchema = {
 };
 
 /**
- * Pre-built `$vectorSearch` pipeline — useful when demoing MongoDB's
- * semantic-search feature directly, without having the agent build it. Three
- * stages: load embedded_movies → vector-search → project the readable fields.
+ * Pre-built director-filmography pipeline — matches the opening state of
+ * Demo 3 (Christopher Nolan / BI analytics). Three stages: source → match
+ * on directors → project the readable fields. The user can extend this
+ * live by asking the agent to "now group by year and calculate average
+ * IMDB rating".
+ *
+ * This sample executes against the real `sample_mflix.movies` collection
+ * (text index on cast/fullplot/genres/title; `$match` on the directors
+ * array works because Mongo matches array elements implicitly). No vector
+ * index or external embedding service required.
  */
 export const SAMPLE_MFLIX_VECTOR_FLOW: PipelineSchema = {
   version: "1.0",
   pipeline: {
-    name: "mflix_vector_search",
-    createdAt: "2026-05-12T00:00:00.000Z",
+    name: "nolan_filmography",
+    createdAt: "2026-05-21T00:00:00.000Z",
     description:
-      "Sample MongoDB Aggregation Pipeline — semantic search over sample_mflix.embedded_movies",
+      "Sample pipeline — Christopher Nolan filmography from sample_mflix.movies. Ask the agent to group / sort / aggregate from here.",
   },
   datasets: {},
   stages: [
@@ -76,30 +83,24 @@ export const SAMPLE_MFLIX_VECTOR_FLOW: PipelineSchema = {
       name: "source",
       type: "MQL_SOURCE",
       depends_on: [],
-      inputs: ["sample_mflix.embedded_movies"],
-      output: "embedded_movies",
+      inputs: ["sample_mflix.movies"],
+      output: "movies",
       operation: {
         stageType: "MQL_SOURCE",
         database: "sample_mflix",
-        collection: "embedded_movies",
+        collection: "movies",
       },
     },
     {
       id: "stage_2",
-      name: "vector_search",
-      type: "MQL_VECTOR_SEARCH",
+      name: "match_director",
+      type: "MQL_MATCH",
       depends_on: ["stage_1"],
       inputs: [],
-      output: "matched_movies",
+      output: "nolan_movies",
       operation: {
-        stageType: "MQL_VECTOR_SEARCH",
-        body: {
-          index: "plot_vector_index",
-          path: "plot_embedding",
-          queryVector: "<computed from natural-language query>",
-          numCandidates: 100,
-          limit: 10,
-        },
+        stageType: "MQL_MATCH",
+        body: { directors: "Christopher Nolan" },
       },
     },
     {
@@ -115,17 +116,17 @@ export const SAMPLE_MFLIX_VECTOR_FLOW: PipelineSchema = {
           title: 1,
           year: 1,
           genres: 1,
-          plot: 1,
-          score: { $meta: "vectorSearchScore" },
+          "imdb.rating": 1,
+          "awards.wins": 1,
         },
       },
     },
   ],
   layout: {
     nodes: [
-      { id: "stage_1", position: { x: 80, y: 80 } },
-      { id: "stage_2", position: { x: 80, y: 240 } },
-      { id: "stage_3", position: { x: 80, y: 400 } },
+      { id: "stage_1", position: { x: 80, y: 60 } },
+      { id: "stage_2", position: { x: 80, y: 220 } },
+      { id: "stage_3", position: { x: 80, y: 380 } },
     ],
     edges: [
       { id: "e1-2", source: "stage_1", target: "stage_2" },

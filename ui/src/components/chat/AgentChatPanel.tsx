@@ -9,7 +9,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import AudioVisualizer from "@/components/voice/AudioVisualizer";
 import { cn } from "@/lib/Utils";
-import type { TraceMessage } from "@/types/ws";
+import type { ConnectionState, TraceMessage } from "@/types/ws";
 
 /**
  * One entry in the visible chat timeline. We surface the user's own messages
@@ -41,6 +41,13 @@ interface AgentChatPanelProps {
   busy: boolean;
   /** Whether the WebSocket session is open. Controls input enabled state. */
   connected: boolean;
+  /** Whether MongoDB Atlas is actually reachable. Drives the empty-state
+   *  guidance — there's no point typing a database query if Atlas is down. */
+  atlasConnected: boolean;
+  /** Full Atlas connection state. Lets the empty state distinguish
+   *  "warming up" (during the MCP cold-start probe) from "disconnected"
+   *  (no connection string configured) so the user sees the right hint. */
+  atlasState: ConnectionState;
   /**
    * Show the text-input + Send button below the chat. On by default in the
    * text-first UX. Toggle in Settings → Chat Panel.
@@ -61,11 +68,38 @@ interface AgentChatPanelProps {
   };
 }
 
+/**
+ * Demo prompt suggestions shown in the empty chat state. Clicking a chip
+ * fills the input field with the first message of that demo — it does NOT
+ * auto-send, so the user can review/edit before hitting Enter. This keeps
+ * the agent's reasoning fully interactive while saving judges typing time.
+ */
+const DEMO_PROMPTS: Array<{ label: string; prompt: string; hint: string }> = [
+  {
+    label: "Vibes search",
+    prompt:
+      "Find me movies about lone cowboys, ruthless outlaws, and dusty gunfights.",
+    hint: "Demo 1 — conceptual search via $match + $text on movies",
+  },
+  {
+    label: "Join + branch",
+    prompt: "Find all comments by Ned Stark.",
+    hint: "Demo 2 — open with a filter, then ask for joins and branches",
+  },
+  {
+    label: "BI analytics",
+    prompt: "Find all movies directed by Christopher Nolan.",
+    hint: "Demo 3 — open with a director match, then group / sort / round",
+  },
+];
+
 export function AgentChatPanel({
   entries,
   onSendText,
   busy,
   connected,
+  atlasConnected,
+  atlasState,
   enableTextInput,
   voiceMode,
   voice,
@@ -111,6 +145,7 @@ export function AgentChatPanel({
     let toolCount = 0;
     let lastResultName: string | null = null;
     let lastResultError = false;
+    let lastResultDurationMs: number | null = null;
     let inFlightLabel: string | null = null;
     for (let i = entries.length - 1; i >= 0; i--) {
       const e = entries[i];
@@ -127,6 +162,8 @@ export function AgentChatPanel({
       } else if (e.trace.kind === "tool_call_result" && lastResultName === null) {
         lastResultName = e.trace.label ?? "tool";
         lastResultError = !!e.trace.isError;
+        lastResultDurationMs =
+          typeof e.trace.durationMs === "number" ? e.trace.durationMs : null;
       }
     }
     const suffix = toolCount > 0 ? ` · step ${toolCount}` : "";
@@ -135,7 +172,9 @@ export function AgentChatPanel({
       const para = paraphraseCustomTool(lastResultName, false, lastResultError);
       const label = para ?? `Called ${lastResultName}`;
       const verb = lastResultError ? "recovering" : "deciding next step";
-      return `${label} · ${verb}…${suffix}`;
+      const latency =
+        lastResultDurationMs != null ? ` · ${lastResultDurationMs}ms` : "";
+      return `${label} · ${verb}…${suffix}${latency}`;
     }
     return "Thinking…";
   }, [entries, busy]);
@@ -209,20 +248,93 @@ export function AgentChatPanel({
       {/* Timeline */}
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
         {entries.length === 0 && (
-          <div className="flex h-full items-center justify-center px-4 text-center">
-            <div className="space-y-2 text-xs text-slate-400">
-              <p>
-                {voiceMode
-                  ? "Talk or type — the agent will build a pipeline as you go."
-                  : "Type a request and the agent will build a pipeline as you go."}
-              </p>
-              <p>
-                Try:{" "}
-                <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-600">
-                  load embedded_movies
-                </span>
-              </p>
-            </div>
+          <div className="flex h-full flex-col items-center justify-center gap-4 px-4 text-center">
+            {!connected ? (
+              <div className="space-y-1.5 text-xs text-slate-400">
+                <p className="font-medium text-slate-500">Not connected yet.</p>
+                <p>
+                  Click{" "}
+                  <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-semibold text-emerald-700">
+                    Connect
+                  </span>{" "}
+                  in the header to start a session.
+                </p>
+              </div>
+            ) : atlasState === "connecting" ? (
+              <div className="space-y-1.5 text-xs text-slate-400">
+                <p className="inline-flex items-center gap-1.5 font-medium text-slate-500">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Warming up MongoDB connection…
+                </p>
+                <p>
+                  The MCP server takes a few seconds to spawn on a cold
+                  start. The demo chips below stay disabled until Atlas is
+                  reachable.
+                </p>
+              </div>
+            ) : atlasState === "error" ? (
+              <div className="space-y-1.5 text-xs text-slate-400">
+                <p className="font-medium text-rose-600">
+                  MongoDB Atlas hit an error.
+                </p>
+                <p>
+                  Hover the red <span className="font-mono">Atlas</span> pill
+                  in the header for details, then open Settings{" "}
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-600">
+                    ⚙
+                  </span>{" "}
+                  → Connection to fix the URI.
+                </p>
+              </div>
+            ) : !atlasConnected ? (
+              <div className="space-y-1.5 text-xs text-slate-400">
+                <p className="font-medium text-slate-500">
+                  MongoDB Atlas isn't connected.
+                </p>
+                <p>
+                  Open Settings{" "}
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-600">
+                    ⚙
+                  </span>{" "}
+                  → Connection and paste your Atlas URI. The agent can still
+                  design pipelines on the canvas, but it can't run queries
+                  yet.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-1 text-xs text-slate-400">
+                <p>
+                  {voiceMode
+                    ? "Talk or type to build a pipeline."
+                    : "Type a request to build a pipeline."}
+                </p>
+                <p>Or pick one of the demos below to get started:</p>
+              </div>
+            )}
+
+            {connected && atlasConnected && (
+              <div className="flex w-full flex-col gap-1.5">
+                {DEMO_PROMPTS.map((d) => (
+                  <button
+                    key={d.label}
+                    type="button"
+                    onClick={() => setDraft(d.prompt)}
+                    title={d.hint}
+                    className="group flex w-full flex-col gap-0.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition-colors hover:border-blue-300 hover:bg-blue-50"
+                  >
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-blue-600">
+                      {d.label}
+                    </span>
+                    <span className="text-xs text-slate-700">
+                      "{d.prompt}"
+                    </span>
+                    <span className="text-[10px] italic text-slate-400 group-hover:text-slate-500">
+                      {d.hint}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
         <div className="space-y-2">

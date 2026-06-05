@@ -50,3 +50,25 @@ body {
   background-color: #fca5a5 !important;
   border-color: #dc2626 !important;
 }
+
+/* Save-confirmation chip in the TopBar. Slides in from the right and softly
+   pulses once so the user notices their save took effect. Uses
+   `key={saveNotice}` on the rendering site so each fresh save replays the
+   animation. */
+@keyframes tfu-save-notice-in {
+  0% {
+    opacity: 0;
+    transform: translateX(8px) scale(0.95);
+  }
+  60% {
+    opacity: 1;
+    transform: translateX(0) scale(1.04);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+.tfu-save-notice {
+  animation: tfu-save-notice-in 280ms ease-out;
+}
