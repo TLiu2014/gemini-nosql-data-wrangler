@@ -27,6 +27,11 @@ export type ClientMessage =
       languageMode?: LanguageMode;
       /** Optional override for the Gemini Live model. Falls back to env.GEMINI_MODEL. */
       geminiModel?: GeminiModelChoice;
+      /** When false, the agent's `suggest_next_prompts` tool is not exposed
+       *  and the system instruction's "suggest follow-ups" section is
+       *  dropped — saves tokens + latency for users who don't want chips.
+       *  Default true. */
+      enableSuggestedPrompts?: boolean;
     }
   | { type: "audio"; data: string } // DEPRECATED — Live API streaming voice path
   | { type: "interrupt" } // DEPRECATED
@@ -145,7 +150,8 @@ export interface TraceMessage {
     | "user_text"
     | "turn_complete"
     | "info"
-    | "error";
+    | "error"
+    | "suggested_prompts";
   /** Human-readable label, e.g. tool name. */
   label?: string;
   /** Tool args (start) or result (end). */
@@ -156,6 +162,10 @@ export interface TraceMessage {
   text?: string;
   /** Wall-clock duration for tool_call_result (ms). */
   durationMs?: number;
+  /** For `suggested_prompts`: clickable follow-up suggestions for the next
+   *  user turn. The UI renders these as chips below the last agent message
+   *  until the user sends their next request. */
+  prompts?: Array<{ label: string; prompt: string }>;
   ts: number;
 }
 

@@ -48,6 +48,10 @@ interface AgentChatPanelProps {
    *  "warming up" (during the MCP cold-start probe) from "disconnected"
    *  (no connection string configured) so the user sees the right hint. */
   atlasState: ConnectionState;
+  /** When false, hide ALL suggestion chips — the hardcoded demo openers in
+   *  the empty state AND any agent-suggested follow-ups after each turn.
+   *  Mirrors the server-side flag passed via the init message. */
+  enableSuggestedPrompts: boolean;
   /**
    * Show the text-input + Send button below the chat. On by default in the
    * text-first UX. Toggle in Settings → Chat Panel.
@@ -100,6 +104,7 @@ export function AgentChatPanel({
   connected,
   atlasConnected,
   atlasState,
+  enableSuggestedPrompts,
   enableTextInput,
   voiceMode,
   voice,
@@ -138,6 +143,33 @@ export function AgentChatPanel({
   // tool just finished, name it so the user knows the agent is between
   // steps (not stuck). Iteration count is appended so multi-step turns
   // feel like they're progressing.
+  // Most recent agent-suggested follow-up chips since the last user message.
+  // We walk the timeline back to either a `suggested_prompts` trace or a user
+  // input boundary, so each turn cleanly replaces the prior turn's chips and
+  // the user starting a new turn (last entry becomes user_text/user_audio)
+  // makes the chips disappear.
+  const agentSuggestions = useMemo<
+    Array<{ label: string; prompt: string }> | null
+  >(() => {
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i];
+      if (e.kind === "user_text" || e.kind === "user_audio") return null;
+      if (e.kind === "trace" && e.trace.kind === "suggested_prompts") {
+        const list = Array.isArray(e.trace.prompts) ? e.trace.prompts : [];
+        const valid = list.filter(
+          (p) =>
+            p &&
+            typeof p.label === "string" &&
+            p.label.trim() !== "" &&
+            typeof p.prompt === "string" &&
+            p.prompt.trim() !== "",
+        );
+        return valid.length > 0 ? valid : null;
+      }
+    }
+    return null;
+  }, [entries]);
+
   const busyLabel = useMemo(() => {
     if (!busy) return null;
     // Count tool calls dispatched since the most recent user message
@@ -308,11 +340,13 @@ export function AgentChatPanel({
                     ? "Talk or type to build a pipeline."
                     : "Type a request to build a pipeline."}
                 </p>
-                <p>Or pick one of the demos below to get started:</p>
+                {enableSuggestedPrompts && (
+                  <p>Or pick one of the demos below to get started:</p>
+                )}
               </div>
             )}
 
-            {connected && atlasConnected && (
+            {connected && atlasConnected && enableSuggestedPrompts && (
               <div className="flex w-full flex-col gap-1.5">
                 {DEMO_PROMPTS.map((d) => (
                   <button
@@ -345,6 +379,32 @@ export function AgentChatPanel({
               focusedToolEntryId={focusedToolEntryId}
             />
           ))}
+          {/* Agent-suggested follow-up chips. Render only when idle (so
+              users don't see stale chips mid-turn) AND when the user hasn't
+              opted out via Settings → Chat Panel → Suggest follow-ups.
+              They clear naturally because the next user message inserts a
+              `user_text` entry that the memo'd lookup terminates on. */}
+          {!busy && agentSuggestions && enableSuggestedPrompts && (
+            <div className="space-y-1.5 pt-1">
+              <div className="px-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                Suggested follow-ups
+              </div>
+              {agentSuggestions.map((s, i) => (
+                <button
+                  key={`${i}-${s.label}`}
+                  type="button"
+                  onClick={() => setDraft(s.prompt)}
+                  title={s.prompt}
+                  className="group flex w-full flex-col gap-0.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition-colors hover:border-blue-300 hover:bg-blue-50"
+                >
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-blue-600">
+                    {s.label}
+                  </span>
+                  <span className="text-xs text-slate-700">"{s.prompt}"</span>
+                </button>
+              ))}
+            </div>
+          )}
           {busy && busyLabel && (
             <div className="flex items-center gap-2.5 rounded-md border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-700">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -470,6 +530,11 @@ function TraceEntry({
   }
   if (trace.kind === "tool_call_start" || trace.kind === "tool_call_result") {
     return <ToolCallLine trace={trace} focused={focused} />;
+  }
+  if (trace.kind === "suggested_prompts") {
+    // Rendered as a chip strip below the timeline, not inline — return null
+    // here so the trace doesn't double-up as an italic debug line.
+    return null;
   }
   if (trace.kind === "turn_complete") {
     return (

@@ -12,6 +12,7 @@ export const CUSTOM_TOOL_NAMES = {
   update_canvas: "update_canvas",
   push_results: "push_results",
   run_pipeline: "run_pipeline",
+  suggest_next_prompts: "suggest_next_prompts",
 } as const;
 
 export type CustomToolName =
@@ -21,7 +22,8 @@ export function isCustomToolName(name: string): name is CustomToolName {
   return (
     name === CUSTOM_TOOL_NAMES.update_canvas ||
     name === CUSTOM_TOOL_NAMES.push_results ||
-    name === CUSTOM_TOOL_NAMES.run_pipeline
+    name === CUSTOM_TOOL_NAMES.run_pipeline ||
+    name === CUSTOM_TOOL_NAMES.suggest_next_prompts
   );
 }
 
@@ -105,6 +107,38 @@ export function getCustomToolDeclarations(): FunctionDeclaration[] {
           },
         },
         required: ["database", "collection", "pipeline", "stage_ids"],
+      },
+    },
+    {
+      name: CUSTOM_TOOL_NAMES.suggest_next_prompts,
+      description:
+        "Suggest 2–3 short follow-up requests the user might want to make next, given the current canvas state. The UI renders these as clickable chips below the most recent agent message; clicking one fills the user's input box (it does NOT auto-send, so the user can edit before submitting). Call this once near the end of every turn, AFTER run_pipeline has populated results — these are 'what to ask next' hints, not a substitute for actually answering the user.",
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          prompts: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                label: {
+                  type: Type.STRING,
+                  description:
+                    "Very short chip label (1-4 words) describing the suggested action, e.g. \"Group by year\" or \"Add lookup\".",
+                },
+                prompt: {
+                  type: Type.STRING,
+                  description:
+                    "The actual full sentence that would be sent as the user's next message if they click the chip, e.g. \"Group these by year and calculate average IMDB rating.\"",
+                },
+              },
+              required: ["label", "prompt"],
+            },
+            description:
+              "Ordered list of 2-3 suggested follow-ups. Tailor them to what the user would naturally want to do next from the current canvas — extending the pipeline (group, sort, project), branching, filtering further, or comparing/aggregating differently. Keep prompts grounded in fields the canvas already references.",
+          },
+        },
+        required: ["prompts"],
       },
     },
   ];

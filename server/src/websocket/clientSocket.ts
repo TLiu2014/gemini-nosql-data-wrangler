@@ -84,12 +84,14 @@ export class ClientSocket {
       | "user_text"
       | "turn_complete"
       | "info"
-      | "error";
+      | "error"
+      | "suggested_prompts";
     label?: string;
     payload?: unknown;
     isError?: boolean;
     text?: string;
     durationMs?: number;
+    prompts?: Array<{ label: string; prompt: string }>;
   }): void {
     this.send({
       type: "trace",
@@ -99,6 +101,7 @@ export class ClientSocket {
       isError: args.isError,
       text: args.text,
       durationMs: args.durationMs,
+      prompts: args.prompts,
       ts: Date.now(),
     });
   }

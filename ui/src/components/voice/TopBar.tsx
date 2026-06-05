@@ -1,4 +1,5 @@
 import {
+  Book,
   Home,
   Plug,
   PlugZap,
@@ -144,6 +145,14 @@ export default function TopBar({
             <span>{isConnecting ? "Connecting…" : "Connect"}</span>
           </button>
         )}
+        <Link
+          to="/docs"
+          className="inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors hover:bg-white/20"
+          title="Agent + tool reference docs"
+        >
+          <Book className="h-4 w-4" />
+          <span className="hidden sm:inline">Docs</span>
+        </Link>
         <Link
           to="/"
           className="inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors hover:bg-white/20"
@@ -355,6 +364,14 @@ export default function TopBar({
                 onChange={(v) => onSettingsChange("enableTextInput", v)}
                 label="Enable text message input"
                 hint="Shows the text box + Send button below the agent chat. On by default — this is now the primary input."
+              />
+              <Check
+                checked={settings.enableSuggestedPrompts}
+                onChange={(v) =>
+                  onSettingsChange("enableSuggestedPrompts", v)
+                }
+                label="Suggest follow-up prompts"
+                hint="Shows clickable chips with demo openers in the empty state and agent-generated follow-ups after each turn. Off = purely typed input; the server also skips the suggest_next_prompts tool so the agent doesn't burn a call per turn. Reconnect to apply."
               />
               <Check
                 checked={settings.enableVoiceMode}

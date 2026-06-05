@@ -21,6 +21,11 @@ interface UseWebSocketOptions {
   getMongoUri?: () => string | undefined;
   /** "english" | "international" — see useSettings.ts. */
   getLanguageMode?: () => "english" | "international";
+  /** Whether the agent's suggest_next_prompts tool should be exposed at chat
+   *  init. Read once when the WS opens; flipping it mid-session requires a
+   *  reconnect to take effect (the Gemini chat object isn't recreatable
+   *  without losing memory). */
+  getEnableSuggestedPrompts?: () => boolean;
 }
 
 export function useWebSocket({
@@ -30,6 +35,7 @@ export function useWebSocket({
   getApiKey,
   getMongoUri,
   getLanguageMode,
+  getEnableSuggestedPrompts,
 }: UseWebSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null);
   const [state, setState] = useState<ConnectionState>("disconnected");
@@ -38,12 +44,20 @@ export function useWebSocket({
   const getApiKeyRef = useRef(getApiKey);
   const getMongoUriRef = useRef(getMongoUri);
   const getLanguageModeRef = useRef(getLanguageMode);
+  const getEnableSuggestedPromptsRef = useRef(getEnableSuggestedPrompts);
   useEffect(() => {
     onMessageRef.current = onMessage;
     getApiKeyRef.current = getApiKey;
     getMongoUriRef.current = getMongoUri;
     getLanguageModeRef.current = getLanguageMode;
-  }, [onMessage, getApiKey, getMongoUri, getLanguageMode]);
+    getEnableSuggestedPromptsRef.current = getEnableSuggestedPrompts;
+  }, [
+    onMessage,
+    getApiKey,
+    getMongoUri,
+    getLanguageMode,
+    getEnableSuggestedPrompts,
+  ]);
 
   const wsUrl =
     url ??
@@ -61,12 +75,15 @@ export function useWebSocket({
       const apiKey = getApiKeyRef.current?.();
       const mongoUri = getMongoUriRef.current?.();
       const languageMode = getLanguageModeRef.current?.();
+      const enableSuggestedPrompts =
+        getEnableSuggestedPromptsRef.current?.() ?? true;
       ws.send(
         JSON.stringify({
           type: "init",
           apiKey,
           mongoUri,
           languageMode,
+          enableSuggestedPrompts,
         } satisfies ClientMessage),
       );
     };

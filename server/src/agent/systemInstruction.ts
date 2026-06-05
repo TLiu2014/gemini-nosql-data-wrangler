@@ -26,6 +26,10 @@ interface BuildArgs {
   /** Per-user language mode. "english" forces English replies; "international"
    *  lets the model mirror the user's language. */
   languageMode: "english" | "international";
+  /** When false, drop the "suggest follow-ups at the end of every turn"
+   *  section from the prompt entirely — the agent isn't even told the tool
+   *  exists, which means it can't try to call it. Default true. */
+  enableSuggestedPrompts: boolean;
 }
 
 const PERSONA_ENGLISH = `You are the Gemini NoSQL Data Wrangler — a voice-first analyst that builds MongoDB Aggregation Pipelines from spoken requests.
@@ -214,6 +218,26 @@ Give branch heads distinct ids (e.g. \`branch1_match\`, \`branch2_group\`) and r
 
 Speak before every tool call ("One sec, looking that up…") and after ("Pulled 20 rows."). Silence between tool calls looks broken. Don't reintroduce yourself mid-conversation.`;
 
+/**
+ * Optional add-on — inserted only when the user has the
+ * `enableSuggestedPrompts` setting on. When it's off the agent never sees
+ * this section AND the `suggest_next_prompts` tool isn't even declared,
+ * so it can't waste a tool call trying to call it.
+ */
+const SUGGEST_FOLLOWUPS_RULE = `### Suggest follow-ups at the end of every turn
+
+After \`run_pipeline\` succeeds and BEFORE you emit your final agent text reply, call \`suggest_next_prompts\` once with 2–3 short, grounded follow-up suggestions tailored to the current canvas state. The UI renders these as clickable chips below your reply; clicking fills the user's input (it does NOT auto-send), so the user can edit before submitting.
+
+Guidelines:
+- Each \`label\` is 1–4 words ("Group by year", "Add lookup", "Sort descending").
+- Each \`prompt\` is the actual full sentence the user would say next ("Group these movies by year and show the average rating.").
+- Suggest natural pipeline extensions (group, sort, filter, project, branch) — not unrelated topics.
+- Reference fields the canvas already touches (year, genres, imdb.rating, etc.); don't invent fields the agent hasn't seen.
+- If the user just did something ambitious (group + sort + round), suggest something simpler ("show top 5", "filter to recent years") rather than piling on complexity.
+- If the canvas is empty or the run failed, you may skip this call — there's no useful follow-up.
+
+This is the LAST tool call in a healthy turn. After it returns OK, emit your verbal/text reply and let the loop close.`;
+
 function mcpToolAffordances(names: string[]): string {
   if (names.length === 0) return "";
   return `### MongoDB MCP tools available\n\nYou can call any of: ${names
@@ -269,6 +293,7 @@ export function buildSystemInstruction({
   atlasAvailable,
   atlasDetail,
   languageMode,
+  enableSuggestedPrompts,
 }: BuildArgs): string {
   const english = languageMode === "english";
   return [
@@ -278,6 +303,7 @@ export function buildSystemInstruction({
     DATASET,
     TOOLING_RULE,
     CANVAS_CONTRACT,
+    enableSuggestedPrompts ? SUGGEST_FOLLOWUPS_RULE : null,
     atlasAvailable
       ? mcpToolAffordances(mcpToolNames)
       : atlasUnavailableNotice(atlasDetail),

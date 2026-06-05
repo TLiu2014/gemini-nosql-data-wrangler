@@ -55,12 +55,13 @@ npm run dev
 
 This boots the UI on `http://localhost:5173` (auto-opens `/app`) and the WebSocket server on `:8080`. The first WebSocket connect spawns the MongoDB MCP server (~3–5s cold start; subsequent sessions are near-instant).
 
-For Cloud Run deployment, see **[deployment.md](./deployment.md)**.
+For Cloud Run deployment, see **[deployment.md](./deployment.md)**. For an in-app reference of the agent's tool surface (custom tools + MCP tools + WebSocket events with example calls), open **`/docs`** in the running app.
 
 ---
 
 ## Features worth highlighting
 
+- **Agent-suggested follow-ups** *(on by default; toggle in Settings → Chat Panel).* At the end of every turn the agent calls a `suggest_next_prompts` tool with 2–3 short, grounded follow-up suggestions tailored to the current canvas state (e.g., "Group by year", "Add lookup", "Sort descending"). The UI renders them as chips below the last agent message; clicking a chip fills the composer with the full prompt so the user can edit before sending. Hardcoded demo openers still appear on the very first empty state. Turning the feature off drops the tool declaration *and* the system-instruction nudge from the chat session, so the agent never tries to call it — saves one tool call + ~500 ms per turn.
 - **Per-stage result preview.** Every node on the canvas gets its own tab in the Results panel. Source tab shows the raw collection top-20; intermediate stages show after-$match / after-$group previews; final stage shows the full result. All from one `$facet` aggregation.
 - **Share a canvas via URL.** The pipeline schema is encoded into the URL fragment (`#…`) on every change. Copy the URL, send it to a teammate, and they see the same canvas state — no backend storage, no accounts.
 - **Export as MQL.** A toolbar button on the canvas downloads the current pipeline as a standalone `db.collection.aggregate([…])` script you can paste into mongosh.

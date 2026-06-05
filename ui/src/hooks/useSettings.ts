@@ -34,6 +34,13 @@ export interface Settings {
   /** Show the text-message input box below the chat timeline. */
   enableTextInput: boolean;
   /**
+   * Show agent-suggested follow-up chips after each turn, and the hardcoded
+   * demo chips in the empty state. When off the chat is purely typed input.
+   * The server skips the `suggest_next_prompts` tool entirely (saves a
+   * tool call + ~500ms per turn) so the agent never even tries.
+   */
+  enableSuggestedPrompts: boolean;
+  /**
    * Show voice/audio features (mic, visualizer, mute button, transcript
    * status row, transcription pipeline). When off, the agent is purely
    * text-driven and the sidebar's audio chrome is hidden.
@@ -78,6 +85,7 @@ const DEFAULT_SETTINGS: Settings = {
   showMflixCollections: true,
   showResultsJsonPane: false,
   enableTextInput: true,
+  enableSuggestedPrompts: true,
   enableVoiceMode: false,
   languageMode: "english",
   layoutMode: "side-by-side",

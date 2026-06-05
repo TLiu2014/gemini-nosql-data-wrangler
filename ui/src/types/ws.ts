@@ -24,6 +24,10 @@ export type ClientMessage =
       languageMode?: "english" | "international";
       /** Optional model override. Falls back to whatever the server is configured with. */
       geminiModel?: GeminiModelChoice;
+      /** When false, the server skips the `suggest_next_prompts` tool and
+       *  its system-instruction nudge — no token / latency cost per turn.
+       *  UI also hides all suggestion chips. Default true. */
+      enableSuggestedPrompts?: boolean;
     }
   | { type: "audio"; data: string } // DEPRECATED — Live API streaming voice path
   | { type: "interrupt" } // DEPRECATED
@@ -145,7 +149,8 @@ export interface TraceMessage {
     | "user_text"
     | "turn_complete"
     | "info"
-    | "error";
+    | "error"
+    | "suggested_prompts";
   label?: string;
   payload?: unknown;
   /** UI-only: when a `tool_call_result` is merged with its earlier
@@ -154,6 +159,10 @@ export interface TraceMessage {
   isError?: boolean;
   text?: string;
   durationMs?: number;
+  /** For `suggested_prompts`: 2–3 clickable follow-up chips for the next
+   *  user turn. The chat panel finds the most-recent occurrence since the
+   *  last user message and renders it as a strip below the timeline. */
+  prompts?: Array<{ label: string; prompt: string }>;
   ts: number;
 }
 

@@ -477,6 +477,10 @@ export default function Workspace() {
         settings.enableVoiceMode ? settings.languageMode : "international",
       [settings.enableVoiceMode, settings.languageMode],
     ),
+    getEnableSuggestedPrompts: useCallback(
+      () => settings.enableSuggestedPrompts,
+      [settings.enableSuggestedPrompts],
+    ),
   });
 
   const handleConnect = useCallback(() => {
@@ -819,6 +823,7 @@ export default function Workspace() {
               connected={ws.state === "connected"}
               atlasConnected={atlasConnection === "connected"}
               atlasState={atlasConnection}
+              enableSuggestedPrompts={settings.enableSuggestedPrompts}
               enableTextInput={settings.enableTextInput}
               voiceMode={voiceMode}
               voice={{

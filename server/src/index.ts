@@ -107,6 +107,9 @@ wss.on("connection", (ws: WsWebSocket) => {
     // works (canvas updates only) when Atlas is disconnected.
     const modelForSession = msg.geminiModel || env.GEMINI_MODEL;
     const languageForSession = msg.languageMode ?? "english";
+    // Default to true if absent — older clients that don't ship this field
+    // still get the chip-suggestion behavior they used to have.
+    const enableSuggestedPrompts = msg.enableSuggestedPrompts !== false;
     const mcpForAgent = mcp ?? new MongoMcpClient("mongodb://disabled");
     agent = new AgentLoop({
       apiKey: apiKey.key,
@@ -116,6 +119,7 @@ wss.on("connection", (ws: WsWebSocket) => {
       languageMode: languageForSession,
       atlasAvailable: !!mcp,
       atlasDetail,
+      enableSuggestedPrompts,
     });
     // Surface the model name + tool count to the UI so it can show them in
     // the sidebar status bar. This replaces the noisy `session.ready` trace

@@ -17,6 +17,7 @@ import {
   CUSTOM_TOOL_NAMES,
   getCustomToolDeclarations,
   isCustomToolName,
+  type CustomToolName,
 } from "./customTools.js";
 // HOLD: separated transcription model. Switching `echoUserSpeech` to a
 // stronger model didn't materially improve transcription quality — see
@@ -60,6 +61,11 @@ export interface AgentLoopOptions {
   languageMode: LanguageMode;
   atlasAvailable: boolean;
   atlasDetail?: string;
+  /** When false, the `suggest_next_prompts` tool is dropped from the chat
+   *  config and the follow-up-suggestions section is omitted from the
+   *  system instruction. Saves one tool call + a small token chunk per
+   *  turn for users who don't want the chips. Default true. */
+  enableSuggestedPrompts?: boolean;
 }
 
 /**
@@ -102,22 +108,33 @@ export class AgentLoop {
       ? this.opts.mcp.geminiFunctionDeclarations().map((d) => d.name)
       : [];
 
+    const suggestEnabled = this.opts.enableSuggestedPrompts !== false;
     const systemInstruction = buildSystemInstruction({
       currentCanvas: this.currentCanvas,
       mcpToolNames,
       atlasAvailable: this.opts.atlasAvailable,
       atlasDetail: this.opts.atlasDetail,
       languageMode: this.opts.languageMode,
+      enableSuggestedPrompts: suggestEnabled,
     });
 
     // MCP declarations come back with `parameters: unknown` because the
     // sanitizer can't statically narrow JSON Schema → Gemini's Schema type.
     // The runtime shape is valid; cast to satisfy the SDK signature.
+    // Drop the suggest_next_prompts declaration when the user has turned
+    // off the chip feature — the agent then can't call it at all (rather
+    // than being told to skip it via instruction), which is the cleanest
+    // way to save the per-turn tool call.
+    const customDecls = getCustomToolDeclarations().filter((d) =>
+      suggestEnabled
+        ? true
+        : (d.name as CustomToolName) !== CUSTOM_TOOL_NAMES.suggest_next_prompts,
+    );
     const functionDeclarations: FunctionDeclaration[] = [
       ...(this.opts.atlasAvailable
         ? (this.opts.mcp.geminiFunctionDeclarations() as unknown as FunctionDeclaration[])
         : []),
-      ...getCustomToolDeclarations(),
+      ...customDecls,
     ];
 
     // Note: we used to emit a `session.ready` info trace here listing the
@@ -629,6 +646,34 @@ export class AgentLoop {
         /* swallow — currentCanvas is only used for downstream trace echoes */
       }
       return { response: { ok: true } };
+    }
+    if (name === CUSTOM_TOOL_NAMES.suggest_next_prompts) {
+      const rawPrompts = Array.isArray(args.prompts) ? args.prompts : null;
+      if (!rawPrompts) {
+        return {
+          response: {
+            error: "suggest_next_prompts requires a `prompts` array",
+          },
+          isError: true,
+        };
+      }
+      // Defensive normalization: coerce labels/prompts to strings, drop
+      // malformed entries, cap at 3 so the UI doesn't fill with chips.
+      const prompts: Array<{ label: string; prompt: string }> = [];
+      for (const p of rawPrompts) {
+        if (!p || typeof p !== "object") continue;
+        const obj = p as Record<string, unknown>;
+        const label = typeof obj.label === "string" ? obj.label.trim() : "";
+        const prompt = typeof obj.prompt === "string" ? obj.prompt.trim() : "";
+        if (!label || !prompt) continue;
+        prompts.push({ label, prompt });
+        if (prompts.length >= 3) break;
+      }
+      this.opts.client.sendTrace({
+        kind: "suggested_prompts",
+        prompts,
+      });
+      return { response: { ok: true, count: prompts.length } };
     }
     if (name === CUSTOM_TOOL_NAMES.push_results) {
       const stageId = typeof args.stageId === "string" ? args.stageId : null;

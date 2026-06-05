@@ -121,6 +121,12 @@ export default function LandingPage() {
             )}
           </button>
           <Link
+            to="/docs"
+            className={`hidden rounded-md border px-3 py-1.5 text-sm font-medium transition-colors sm:inline-flex ${t.button}`}
+          >
+            Docs
+          </Link>
+          <Link
             to="/app"
             className={`rounded-md border px-3 py-1.5 text-sm font-medium transition-colors ${t.button}`}
           >
