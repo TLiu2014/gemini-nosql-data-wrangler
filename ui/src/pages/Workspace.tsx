@@ -487,6 +487,25 @@ export default function Workspace() {
     ws.connect();
   }, [ws]);
 
+  /**
+   * Connect wrapper that warns the user when they have no API key or no
+   * MongoDB URI set in Settings. We don't block — the server may have
+   * `GEMINI_API_KEY` / `MONGODB_URI` env vars configured, in which case
+   * the connect still succeeds — but a heads-up in the header chip saves
+   * users from staring at a stuck "Connecting…" without knowing why.
+   */
+  const handleConnectAttempt = useCallback(() => {
+    const missing: string[] = [];
+    if (!settings.apiKey.trim()) missing.push("Gemini API key");
+    if (!settings.mongoUri.trim()) missing.push("MongoDB connection string");
+    if (missing.length > 0) {
+      flashSaveNotice(
+        `⚠ ${missing.join(" + ")} not set in Settings — connection will fail unless the server has a fallback configured.`,
+      );
+    }
+    ws.connect();
+  }, [settings.apiKey, settings.mongoUri, ws, flashSaveNotice]);
+
   const handleDisconnect = useCallback(() => {
     ws.disconnect();
   }, [ws]);
@@ -806,7 +825,7 @@ export default function Workspace() {
         geminiDetail={geminiDetail}
         isConnected={isConnected}
         isConnecting={isConnecting}
-        onConnect={handleConnect}
+        onConnect={handleConnectAttempt}
         onDisconnect={handleDisconnect}
       />
 

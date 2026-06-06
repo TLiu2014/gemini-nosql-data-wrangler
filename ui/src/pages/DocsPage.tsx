@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { LAUNCH_APP_LABEL } from "@/lib/labels";
 import {
   ArrowRight,
+  ArrowUp,
   Book,
   Database,
   ExternalLink,
+  Film,
   Moon,
   Network,
   Server,
@@ -54,6 +57,18 @@ export default function DocsPage() {
   const dark = theme === "dark";
   const t = useMemo(() => themeTokens(dark), [dark]);
 
+  // Show the floating "back to top" button once the user has scrolled past
+  // the first viewport. We attach to window scroll once and toggle a piece
+  // of state — no need for IntersectionObserver here.
+  const [showBackToTop, setShowBackToTop] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onScroll = () => setShowBackToTop(window.scrollY > 600);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
   return (
     <div className={`min-h-screen w-full ${t.page}`}>
       {/* Top nav — matches the landing page header exactly so the two
@@ -85,7 +100,7 @@ export default function DocsPage() {
             to="/app"
             className="rounded-md bg-gradient-to-r from-violet-600 to-blue-600 px-3 py-1.5 text-sm font-semibold text-white shadow-md shadow-violet-500/20 transition-transform hover:scale-[1.02]"
           >
-            Launch
+            {LAUNCH_APP_LABEL}
           </Link>
         </div>
       </header>
@@ -109,17 +124,27 @@ export default function DocsPage() {
           <p
             className={`mt-5 max-w-2xl text-base leading-relaxed sm:text-lg ${t.subtle}`}
           >
-            The agent runs an explicit ReAct loop in the backend, with four
-            custom tools that drive the UI and the standard MongoDB MCP
-            tools that drive the database. This page documents every tool
-            with example calls so you can extend the agent or wire your own
+            The agent is built on the{" "}
+            <a
+              href="https://adk.dev"
+              target="_blank"
+              rel="noreferrer"
+              className="text-violet-500 hover:underline"
+            >
+              Google Agent Development Kit
+            </a>{" "}
+            (<code className={`rounded ${t.codeInline} px-1`}>@google/adk</code>)
+            with Gemini as the model and the MongoDB MCP server as the
+            database integration. Four custom tools drive the UI; six MCP
+            tools drive the database. This page documents every tool with
+            example calls so you can extend the agent or wire your own
             client into the same WebSocket protocol.
           </p>
         </div>
       </section>
 
       {/* Architecture mini-overview */}
-      <section className="mx-auto max-w-6xl px-6 pb-16">
+      <section id="architecture" className="mx-auto max-w-6xl px-6 pb-16 scroll-mt-20">
         <div
           className={`text-xs font-semibold uppercase tracking-wider ${t.eyebrow}`}
         >
@@ -140,46 +165,83 @@ export default function DocsPage() {
             t={t}
             dark={dark}
             icon={<Sparkles className="h-5 w-5" />}
-            title="Agent (Gemini)"
-            body="A `chats.create` ReAct loop. Each user turn fans out into tool calls until the model stops asking for tools, then emits a final text reply."
+            title="Agent (ADK + Gemini)"
+            body="An ADK `LlmAgent` runs the tool-call loop with Gemini as the model. Each user turn fans out into tool calls until the model stops asking for tools, then emits a final text reply."
           />
           <ArchCard
             t={t}
             dark={dark}
             icon={<Database className="h-5 w-5" />}
             title="MongoDB MCP"
-            body="A standard MCP server spawned per session. Exposes `aggregate`, `find`, `count`, `collection-schema`, `list-collections`, `list-databases`."
+            body="A standard MCP server spawned per session, exposed to the agent via ADK's `MCPToolset`. Provides `aggregate`, `find`, `count`, `collection-schema`, `list-collections`, `list-databases`."
           />
         </div>
       </section>
 
-      {/* Table of contents */}
-      <section className="mx-auto max-w-6xl px-6 pb-10">
-        <nav
-          className={`rounded-lg border p-5 ${t.card}`}
-          aria-label="Table of contents"
-        >
-          <div
-            className={`mb-3 text-xs font-semibold uppercase tracking-wider ${t.eyebrow}`}
-          >
-            On this page
-          </div>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-3">
-            <TocLink t={t} href="#custom-tools" label="Custom tools" sub="UI + execution helpers" />
-            <TocLink t={t} href="#mcp-tools" label="MongoDB MCP tools" sub="Database operations" />
-            <TocLink t={t} href="#ws-events" label="WebSocket events" sub="Server → client traces" />
-          </div>
-        </nav>
-      </section>
+      {/* Two-column layout for the rest of the page: sticky table of
+          contents on the left (desktop only), all content sections on the
+          right. The TOC mirrors the section anchor ids — clicks scroll to
+          the matching `id`. On mobile the sidebar is hidden and the page
+          flows top-to-bottom. */}
+      <div className="mx-auto max-w-6xl px-6">
+        <div className="grid grid-cols-1 gap-8 lg:grid-cols-[220px_minmax(0,1fr)]">
+          <aside className="hidden lg:block">
+            <nav
+              className="sticky top-6 max-h-[calc(100vh-3rem)] overflow-y-auto pb-8"
+              aria-label="Documentation table of contents"
+            >
+              <div
+                className={`mb-3 text-[10px] font-semibold uppercase tracking-[0.18em] ${t.eyebrow}`}
+              >
+                On this page
+              </div>
+              <ul className="space-y-1 text-sm">
+                <TocGroup t={t} label="Architecture">
+                  <TocAnchor t={t} href="#architecture">Overview</TocAnchor>
+                </TocGroup>
+                <TocGroup t={t} label="Custom tools">
+                  <TocAnchor t={t} href="#tool-update_canvas">update_canvas</TocAnchor>
+                  <TocAnchor t={t} href="#tool-run_pipeline">run_pipeline</TocAnchor>
+                  <TocAnchor t={t} href="#tool-push_results">push_results</TocAnchor>
+                  <TocAnchor t={t} href="#tool-suggest_next_prompts">suggest_next_prompts</TocAnchor>
+                </TocGroup>
+                <TocGroup t={t} label="MongoDB MCP tools">
+                  <TocAnchor t={t} href="#tool-aggregate">aggregate</TocAnchor>
+                  <TocAnchor t={t} href="#tool-find">find</TocAnchor>
+                  <TocAnchor t={t} href="#tool-count">count</TocAnchor>
+                  <TocAnchor t={t} href="#tool-collection-schema">collection-schema</TocAnchor>
+                  <TocAnchor t={t} href="#tool-list-collections">list-collections</TocAnchor>
+                  <TocAnchor t={t} href="#tool-list-databases">list-databases</TocAnchor>
+                </TocGroup>
+                <TocGroup t={t} label="Trace + events">
+                  <TocAnchor t={t} href="#visual-trace">Visual trace timeline</TocAnchor>
+                  <TocAnchor t={t} href="#ws-events">WebSocket events</TocAnchor>
+                </TocGroup>
+                <TocGroup t={t} label="Dataset">
+                  <TocAnchor t={t} href="#mflix-dataset">Mflix sample data</TocAnchor>
+                </TocGroup>
+              </ul>
+            </nav>
+          </aside>
 
+          <div className="min-w-0">
       {/* Custom tools */}
-      <section id="custom-tools" className="mx-auto max-w-6xl px-6 pb-16 scroll-mt-20">
+      <section id="custom-tools" className="pb-16 scroll-mt-20">
         <SectionHeading
           t={t}
           icon={<Wrench className="h-5 w-5" />}
           eyebrow="Custom tools"
           title="The four tools we built."
-          body="Custom tools live in the backend and dispatch directly to the WebSocket client. They never touch the database — they update the canvas, populate results, or hint at follow-ups."
+          body={
+            <>
+              Custom tools live in the backend and dispatch directly to the
+              WebSocket client. They&apos;re registered with ADK as{" "}
+              <code className={`rounded ${t.codeInline} px-1`}>FunctionTool</code>
+              {" "}instances so the agent picks them up alongside the
+              MongoDB MCP tools. They never touch the database — they update
+              the canvas, populate results, or hint at follow-ups.
+            </>
+          }
         />
         <div className="mt-8 space-y-6">
           <ToolDoc
@@ -317,7 +379,7 @@ export default function DocsPage() {
       </section>
 
       {/* MCP tools */}
-      <section id="mcp-tools" className="mx-auto max-w-6xl px-6 pb-16 scroll-mt-20">
+      <section id="mcp-tools" className="pb-16 scroll-mt-20">
         <SectionHeading
           t={t}
           icon={<Database className="h-5 w-5" />}
@@ -325,12 +387,18 @@ export default function DocsPage() {
           title="Standard MCP surface, exposed unchanged."
           body={
             <>
-              These tools come from <code className={`rounded ${t.codeInline} px-1.5`}>mongodb-mcp-server</code> — the
-              agent calls them the same way any MCP client would. Schemas are
-              auto-discovered at session start and sanitized for Gemini's
-              function-declaration format. The agent prefers <code className={`rounded ${t.codeInline} px-1.5`}>run_pipeline</code> for
-              canvas-driven flows; <code className={`rounded ${t.codeInline} px-1.5`}>aggregate</code> stays available for ad-hoc
-              inspection.
+              These tools come from{" "}
+              <code className={`rounded ${t.codeInline} px-1.5`}>
+                mongodb-mcp-server
+              </code>{" "}
+              and are exposed to the agent through ADK&apos;s{" "}
+              <code className={`rounded ${t.codeInline} px-1.5`}>MCPToolset</code>
+              {" "}— schemas are discovered + mapped automatically. The agent
+              prefers{" "}
+              <code className={`rounded ${t.codeInline} px-1.5`}>run_pipeline</code>{" "}
+              for canvas-driven flows;{" "}
+              <code className={`rounded ${t.codeInline} px-1.5`}>aggregate</code>{" "}
+              stays available for ad-hoc inspection.
             </>
           }
         />
@@ -450,14 +518,162 @@ export default function DocsPage() {
         </p>
       </section>
 
+      {/* Visual trace timeline — what the UI shows while the agent works.
+          Sits between the tool-reference sections (above) and the raw
+          WebSocket-event schema (below) so readers see the user-facing
+          rendering before the wire-format details. */}
+      <section id="visual-trace" className="pb-16 scroll-mt-20">
+        <SectionHeading
+          t={t}
+          icon={<Terminal className="h-5 w-5" />}
+          eyebrow="Visual trace timeline"
+          title="See exactly what the agent is doing, as it does it."
+          body={
+            <>
+              While the agent works, the chat panel renders a live trace of
+              every tool call. ADK&apos;s{" "}
+              <code className={`rounded ${t.codeInline} px-1`}>
+                beforeToolCallback
+              </code>{" "}
+              and{" "}
+              <code className={`rounded ${t.codeInline} px-1`}>
+                afterToolCallback
+              </code>{" "}
+              fire on the server; we forward each one as a{" "}
+              <code className={`rounded ${t.codeInline} px-1`}>trace</code>{" "}
+              WebSocket event, and the chat panel turns those into
+              progress pills, expandable result cards, and (at end of turn)
+              suggestion chips.
+            </>
+          }
+        />
+
+        <div className="mt-6 space-y-4">
+          <h3 className={`text-sm font-semibold ${t.cardTitle}`}>
+            Lifecycle of one user turn
+          </h3>
+          <ol className={`list-decimal space-y-2 pl-6 text-sm ${t.cardBody}`}>
+            <li>
+              The user types or speaks a message. The UI emits a{" "}
+              <code className={`rounded ${t.codeInline} px-1`}>user.text</code>{" "}
+              (or{" "}
+              <code className={`rounded ${t.codeInline} px-1`}>user.audio</code>
+              ) WebSocket message.
+            </li>
+            <li>
+              An <em>information</em> trace lands first (
+              <code className={`rounded ${t.codeInline} px-1`}>kind: &quot;info&quot;</code>
+              , label{" "}
+              <code className={`rounded ${t.codeInline} px-1`}>thinking</code>),
+              showing a violet &ldquo;Thinking…&rdquo; pill at the bottom of
+              the chat panel.
+            </li>
+            <li>
+              For every tool the agent calls, a{" "}
+              <code className={`rounded ${t.codeInline} px-1`}>
+                tool_call_start
+              </code>{" "}
+              trace arrives → renders as a progress card with the tool name
+              and (expandable) args.
+            </li>
+            <li>
+              When the tool returns, a{" "}
+              <code className={`rounded ${t.codeInline} px-1`}>
+                tool_call_result
+              </code>{" "}
+              trace lands with the result + duration in ms → the card
+              flips to a green-bordered &ldquo;Called X · 612 ms&rdquo;
+              with the full response available behind a disclosure.
+            </li>
+            <li>
+              The agent&apos;s final text reply streams as an{" "}
+              <code className={`rounded ${t.codeInline} px-1`}>agent_text</code>{" "}
+              trace → renders as a purple chat bubble.
+            </li>
+            <li>
+              If the user has follow-ups enabled, the agent fires{" "}
+              <code className={`rounded ${t.codeInline} px-1`}>
+                suggest_next_prompts
+              </code>{" "}
+              before closing the turn → 2–3 clickable chips appear under
+              the reply.
+            </li>
+            <li>
+              A{" "}
+              <code className={`rounded ${t.codeInline} px-1`}>
+                turn_complete
+              </code>{" "}
+              trace marks the boundary; the busy pill clears and the
+              composer re-enables.
+            </li>
+          </ol>
+        </div>
+
+        <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-3">
+          <TraceVisualCard
+            t={t}
+            title="Progress pill"
+            kind="tool_call_start"
+            body="Spinner + tool name + truncated args. Click to expand the raw JSON of the args."
+          />
+          <TraceVisualCard
+            t={t}
+            title="Result card"
+            kind="tool_call_result"
+            body="Green ✓ (or red ✗ on error) + tool name + duration ms. Click to expand args + response."
+          />
+          <TraceVisualCard
+            t={t}
+            title="Suggestion chip"
+            kind="suggested_prompts"
+            body={`Short label + the full follow-up prompt. Clicking fills the composer (doesn't auto-send).`}
+          />
+        </div>
+
+        <p className={`mt-6 text-sm ${t.muted}`}>
+          Example trace sequence from Demo&nbsp;3 (the BI analytics turn):{" "}
+          <code className={`rounded ${t.codeInline} px-1`}>info(thinking)</code>{" "}
+          →{" "}
+          <code className={`rounded ${t.codeInline} px-1`}>
+            tool_call_start(update_canvas)
+          </code>{" "}
+          →{" "}
+          <code className={`rounded ${t.codeInline} px-1`}>
+            tool_call_result(update_canvas)
+          </code>{" "}
+          →{" "}
+          <code className={`rounded ${t.codeInline} px-1`}>
+            tool_call_start(run_pipeline)
+          </code>{" "}
+          →{" "}
+          <code className={`rounded ${t.codeInline} px-1`}>
+            tool_call_result(run_pipeline)
+          </code>{" "}
+          (server fans out per-stage{" "}
+          <code className={`rounded ${t.codeInline} px-1`}>results</code>{" "}
+          events during this step) →{" "}
+          <code className={`rounded ${t.codeInline} px-1`}>
+            tool_call_start(suggest_next_prompts)
+          </code>{" "}
+          →{" "}
+          <code className={`rounded ${t.codeInline} px-1`}>
+            tool_call_result(suggest_next_prompts)
+          </code>{" "}
+          →{" "}
+          <code className={`rounded ${t.codeInline} px-1`}>agent_text</code>{" "}
+          →{" "}
+          <code className={`rounded ${t.codeInline} px-1`}>turn_complete</code>.
+        </p>
+      </section>
+
       {/* WebSocket events */}
-      <section id="ws-events" className="mx-auto max-w-6xl px-6 pb-20 scroll-mt-20">
+      <section id="ws-events" className="pb-20 scroll-mt-20">
         <SectionHeading
           t={t}
           icon={<Server className="h-5 w-5" />}
           eyebrow="WebSocket events"
-          title="What the server pushes to the client."
-          body="Tool calls and tool results stream out as `trace` events so the UI can render the visual trace timeline. Canvas + results updates are their own message types so they can be persisted independently."
+          title="Wire-format reference."
+          body="Five message types ride a single long-lived WebSocket. `trace` events power the visual trace above; the other four carry their own payload shapes."
         />
         <div className={`mt-8 overflow-hidden rounded-lg border ${t.card}`}>
           <table className="w-full text-sm">
@@ -490,7 +706,99 @@ export default function DocsPage() {
         </p>
       </section>
 
-      {/* Footer CTA */}
+      {/* Mflix dataset — the hackathon-required sample data. Documenting it
+          here so judges can confirm the requirement is met without reading
+          the system instruction. */}
+      <section id="mflix-dataset" className="pb-20 scroll-mt-20">
+        <SectionHeading
+          t={t}
+          icon={<Film className="h-5 w-5" />}
+          eyebrow="Sample data"
+          title="The Mflix dataset."
+          body={
+            <>
+              The hackathon requires using MongoDB&apos;s{" "}
+              <code className={`rounded ${t.codeInline} px-1`}>sample_mflix</code>{" "}
+              sample database. We load it from Atlas&apos; built-in sample
+              loader (Atlas UI →{" "}
+              <em>cluster ⋯ menu → Load Sample Dataset</em>) and the agent
+              builds every pipeline against it. The collections below appear
+              in the &ldquo;Mflix collections&rdquo; reference tab in the
+              app so users can browse what&apos;s available before asking.
+            </>
+          }
+        />
+
+        <div className={`mt-8 overflow-hidden rounded-lg border ${t.card}`}>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className={`text-left ${t.tableHead}`}>
+                <th className="px-4 py-2 font-semibold">Collection</th>
+                <th className="px-4 py-2 font-semibold">Approx size</th>
+                <th className="px-4 py-2 font-semibold">What it contains</th>
+              </tr>
+            </thead>
+            <tbody className={t.tableBody}>
+              <MflixRow
+                t={t}
+                name="movies"
+                size="~23k docs"
+                body="The full movie catalog — title, year, genres, directors, cast, plot, runtime, imdb.rating, awards.wins. Text index on cast / fullplot / genres / title; this is the primary collection for all three demos."
+              />
+              <MflixRow
+                t={t}
+                name="embedded_movies"
+                size="~3.4k docs"
+                body="A subset of `movies` limited to Western / Action / Fantasy. Each doc carries a 1536-dim plot_embedding vector (provided by the sample dataset)."
+              />
+              <MflixRow
+                t={t}
+                name="comments"
+                size="~50k docs"
+                body="User comments linked to movies via movie_id. Used by Demo 2 (join + branching) to find a specific commenter and join in movie details."
+              />
+              <MflixRow
+                t={t}
+                name="users"
+                size="~200 docs"
+                body="User profiles — name, email, password (yes, plaintext in the sample). Lookup target for `comments`."
+              />
+              <MflixRow
+                t={t}
+                name="theaters"
+                size="~1.5k docs"
+                body="Movie theater locations with geographic coordinates. Not used by the current demos but available."
+              />
+              <MflixRow
+                t={t}
+                name="sessions"
+                size="<10 docs"
+                body="Session tokens. Vestigial — included for completeness; not touched by the demos."
+              />
+            </tbody>
+          </table>
+        </div>
+
+        <p className={`mt-4 text-sm ${t.muted}`}>
+          Need the live cluster numbers? Open{" "}
+          <Link to="/app" className="text-violet-500 hover:underline">
+            the app
+          </Link>
+          &apos;s &ldquo;Mflix collections&rdquo; tab and click{" "}
+          <em>Refresh from Atlas</em> — the agent runs{" "}
+          <code className={`rounded ${t.codeInline} px-1`}>list-collections</code>{" "}
+          +{" "}
+          <code className={`rounded ${t.codeInline} px-1`}>count</code>{" "}
+          +{" "}
+          <code className={`rounded ${t.codeInline} px-1`}>find</code>{" "}
+          against your cluster and merges the results.
+        </p>
+      </section>
+          </div>
+        </div>
+      </div>
+
+      {/* Footer CTA — full-width, outside the two-column grid. */}
       <section className="mx-auto max-w-6xl px-6 pb-24">
         <div className={`rounded-xl border px-8 py-10 text-center ${t.footerBox}`}>
           <h3 className="text-2xl font-bold tracking-tight sm:text-3xl">
@@ -504,7 +812,7 @@ export default function DocsPage() {
             to="/app"
             className="mt-6 inline-flex items-center gap-2 rounded-md bg-gradient-to-r from-violet-600 to-blue-600 px-6 py-3 text-base font-semibold text-white shadow-lg shadow-violet-500/20 transition-transform hover:scale-[1.02]"
           >
-            Launch Workspace
+            {LAUNCH_APP_LABEL}
             <ArrowRight className="h-4 w-4" />
           </Link>
         </div>
@@ -513,8 +821,26 @@ export default function DocsPage() {
       <footer
         className={`mx-auto max-w-6xl px-6 pb-10 text-center text-xs ${t.footerText}`}
       >
-        Built for the Gemini hackathon, 2026. Open source.
+        Built by Tianwei Liu for the Google Cloud Rapid Agent Hackathon, 2026. Open source.
       </footer>
+
+      {/* Floating "back to top" button — fixed bottom-right, fades in after
+          the user scrolls past the hero. Smooth-scrolls to top on click. */}
+      <button
+        type="button"
+        onClick={() =>
+          window.scrollTo({ top: 0, left: 0, behavior: "smooth" })
+        }
+        aria-label="Back to top"
+        title="Back to top"
+        className={`fixed bottom-6 right-6 z-30 inline-flex h-11 w-11 items-center justify-center rounded-full bg-gradient-to-r from-violet-600 to-blue-600 text-white shadow-lg shadow-violet-500/30 transition-all hover:scale-110 ${
+          showBackToTop
+            ? "pointer-events-auto translate-y-0 opacity-100"
+            : "pointer-events-none translate-y-2 opacity-0"
+        }`}
+      >
+        <ArrowUp className="h-5 w-5" />
+      </button>
     </div>
   );
 }
@@ -692,6 +1018,102 @@ function TocLink({
       <span className={`text-sm font-medium ${t.cardTitle}`}>{label}</span>
       <span className={`text-xs ${t.muted}`}>{sub}</span>
     </a>
+  );
+}
+
+/** A heading + nested anchor list rendered inside the sticky left TOC. */
+function TocGroup({
+  t,
+  label,
+  children,
+}: {
+  t: ThemeTokens;
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <li className="pt-3 first:pt-0">
+      <div
+        className={`mb-1 text-[10px] font-semibold uppercase tracking-wider ${t.muted}`}
+      >
+        {label}
+      </div>
+      <ul className="space-y-0.5 border-l border-slate-200/30 pl-3">
+        {children}
+      </ul>
+    </li>
+  );
+}
+
+function TocAnchor({
+  t,
+  href,
+  children,
+}: {
+  t: ThemeTokens;
+  href: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <li>
+      <a
+        href={href}
+        className={`block rounded px-1.5 py-1 text-[12.5px] font-mono transition-colors ${t.cardBody} hover:text-violet-500`}
+      >
+        {children}
+      </a>
+    </li>
+  );
+}
+
+/** Small illustrative card showing one slice of the visual-trace UI. */
+function TraceVisualCard({
+  t,
+  title,
+  kind,
+  body,
+}: {
+  t: ThemeTokens;
+  title: string;
+  kind: string;
+  body: string;
+}) {
+  return (
+    <div className={`rounded-lg border p-4 ${t.card}`}>
+      <div
+        className={`mb-1 text-[10px] font-semibold uppercase tracking-wider ${t.eyebrow}`}
+      >
+        {title}
+      </div>
+      <code className={`rounded ${t.codeInline} px-1.5 py-0.5 text-xs`}>
+        kind: {`"${kind}"`}
+      </code>
+      <p className={`mt-2 text-sm leading-snug ${t.cardBody}`}>{body}</p>
+    </div>
+  );
+}
+
+function MflixRow({
+  t,
+  name,
+  size,
+  body,
+}: {
+  t: ThemeTokens;
+  name: string;
+  size: string;
+  body: string;
+}) {
+  return (
+    <tr className="border-t border-inherit align-top">
+      <td className="px-4 py-3">
+        <code className={`rounded ${t.codeInline} px-1.5 py-0.5 text-xs`}>
+          {name}
+        </code>
+      </td>
+      <td className={`px-4 py-3 text-xs ${t.muted}`}>{size}</td>
+      <td className="px-4 py-3 text-sm leading-snug">{body}</td>
+    </tr>
   );
 }
 

@@ -3,11 +3,13 @@ import { Link } from "react-router-dom";
 import {
   ArrowRight,
   Database,
+  ImageIcon,
   Moon,
   Network,
   Sparkles,
   Sun,
 } from "lucide-react";
+import { LAUNCH_APP_LABEL } from "@/lib/labels";
 
 type Theme = "light" | "dark";
 
@@ -128,9 +130,9 @@ export default function LandingPage() {
           </Link>
           <Link
             to="/app"
-            className={`rounded-md border px-3 py-1.5 text-sm font-medium transition-colors ${t.button}`}
+            className="rounded-md bg-gradient-to-r from-violet-600 to-blue-600 px-3 py-1.5 text-sm font-semibold text-white shadow-md shadow-violet-500/20 transition-transform hover:scale-[1.02]"
           >
-            Launch
+            {LAUNCH_APP_LABEL}
           </Link>
         </div>
       </header>
@@ -150,17 +152,20 @@ export default function LandingPage() {
             Gemini Data Wrangler.
           </h1>
           <p className={`mt-6 text-lg leading-relaxed sm:text-xl ${t.subtle}`}>
-            Talk to your MongoDB database using the new Multimodal Agent MCP.
-            Speak (or type) a query, watch the agent build a pipeline on the
-            canvas, and see real results stream back — all powered by
-            Gemini&nbsp;3 + the Model Context Protocol.
+            Talk to your MongoDB database in plain English. Watch a{" "}
+            <span className="font-semibold text-violet-400">Google ADK</span>{" "}
+            agent — powered by{" "}
+            <span className="font-semibold">Gemini&nbsp;3</span> and the{" "}
+            <span className="font-semibold">MongoDB&nbsp;MCP Server</span> —
+            design a MongoDB Aggregation Pipeline on the canvas stage by
+            stage, run it against your data, and stream the results back.
           </p>
           <div className="mt-10 flex flex-col gap-3 sm:flex-row sm:items-center">
             <Link
               to="/app"
               className="group inline-flex items-center justify-center gap-2 rounded-md bg-gradient-to-r from-violet-600 to-blue-600 px-6 py-3 text-base font-semibold text-white shadow-lg shadow-violet-500/20 transition-transform hover:scale-[1.02]"
             >
-              Launch Demo
+              {LAUNCH_APP_LABEL}
               <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
             </Link>
             <a
@@ -173,11 +178,39 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Video placeholder */}
-      <section className="mx-auto max-w-6xl px-6 pb-24">
-        <div className={`overflow-hidden rounded-xl border shadow-2xl ${t.videoBox} ${dark ? "shadow-black/40" : "shadow-slate-200/60"}`}>
+      {/* Visual proof — transform-flow screenshot above, demo video below.
+          Stacked (not side-by-side) so each gets the full content width: the
+          screenshot needs room for stage labels to be legible, and a wider
+          video frame is easier to follow. Both placeholders for now; drop a
+          real screenshot + recording in `docs/screenshots/` later. */}
+      <section className="mx-auto max-w-6xl space-y-6 px-6 pb-24">
+        {/* Screenshot — TODO: drop `docs/screenshots/canvas-flow.png` in and
+            swap the placeholder for an <img> tag. Suggested capture: workspace
+            mid-Demo 2, $lookup branching into two parallel paths, results
+            panel showing per-stage tabs. */}
+        <div
+          className={`overflow-hidden rounded-xl border shadow-2xl ${t.videoBox} ${dark ? "shadow-black/40" : "shadow-slate-200/60"}`}
+        >
           <div className="aspect-video w-full">
-            <div className={`flex h-full w-full flex-col items-center justify-center ${t.videoSurface} ${t.videoCopy}`}>
+            <div
+              className={`flex h-full w-full flex-col items-center justify-center ${t.videoSurface} ${t.videoCopy}`}
+            >
+              <div className={`rounded-full border p-4 ${t.videoIcon}`}>
+                <ImageIcon className="h-8 w-8" />
+              </div>
+              <p className="mt-4 text-sm">Transform-flow screenshot</p>
+              <p className="text-xs italic">(coming soon)</p>
+            </div>
+          </div>
+        </div>
+        {/* Demo video placeholder. */}
+        <div
+          className={`overflow-hidden rounded-xl border shadow-2xl ${t.videoBox} ${dark ? "shadow-black/40" : "shadow-slate-200/60"}`}
+        >
+          <div className="aspect-video w-full">
+            <div
+              className={`flex h-full w-full flex-col items-center justify-center ${t.videoSurface} ${t.videoCopy}`}
+            >
               <div className={`rounded-full border p-4 ${t.videoIcon}`}>
                 <svg
                   className="h-8 w-8"
@@ -189,7 +222,8 @@ export default function LandingPage() {
                   <polygon points="6 4 20 12 6 20 6 4" />
                 </svg>
               </div>
-              <p className="mt-4 text-sm">Demo video coming soon.</p>
+              <p className="mt-4 text-sm">Demo video</p>
+              <p className="text-xs italic">(coming soon)</p>
             </div>
           </div>
         </div>
@@ -212,22 +246,22 @@ export default function LandingPage() {
         <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
           <StackCard
             icon={<Sparkles className="h-5 w-5" />}
-            title="Gemini 3 Models"
-            body="The ReAct loop runs on Gemini 3.1 Pro for transform reasoning, with Flash variants on tap for cheaper turns. Multimodal: text, audio, or both."
+            title="Google ADK + Gemini"
+            body="The agent is built with the Google Agent Development Kit (`@google/adk`). An LlmAgent orchestrates the tool-call loop with Gemini 3 Flash as the brain. Four FunctionTools drive the UI; ADK validates args, dispatches, and streams a visual trace to the client."
             accent={dark ? "from-violet-500/20 to-violet-500/0" : "from-violet-100 to-transparent"}
             t={t}
           />
           <StackCard
             icon={<Database className="h-5 w-5" />}
-            title="MongoDB Atlas"
-            body="Live cluster, real Aggregation Pipelines, real Vector Search. The agent builds queries against your data — sample_mflix out of the box."
+            title="MongoDB MCP Server"
+            body="The agent talks to MongoDB Atlas through the official MongoDB MCP Server (the hackathon's partner MCP integration). ADK's MCPToolset spawns it as a stdio subprocess and auto-discovers aggregate / find / collection-schema as agent tools."
             accent={dark ? "from-emerald-500/20 to-emerald-500/0" : "from-emerald-100 to-transparent"}
             t={t}
           />
           <StackCard
             icon={<Network className="h-5 w-5" />}
-            title="Model Context Protocol"
-            body="Standard MCP server bridges Gemini to MongoDB. find / aggregate / collection-schema — every tool call is auditable in the visual trace."
+            title="Live pipeline preview"
+            body="Custom `run_pipeline` tool wraps the agent's MongoDB aggregation in $facet so every stage gets a preview tab in one round-trip — the pipeline still sees the full collection, only the UI display is capped."
             accent={dark ? "from-blue-500/20 to-blue-500/0" : "from-blue-100 to-transparent"}
             t={t}
           />
@@ -248,14 +282,14 @@ export default function LandingPage() {
             to="/app"
             className="mt-6 inline-flex items-center gap-2 rounded-md bg-gradient-to-r from-violet-600 to-blue-600 px-6 py-3 text-base font-semibold text-white shadow-lg shadow-violet-500/20 transition-transform hover:scale-[1.02]"
           >
-            Launch Demo
+            {LAUNCH_APP_LABEL}
             <ArrowRight className="h-4 w-4" />
           </Link>
         </div>
       </section>
 
       <footer className={`mx-auto max-w-6xl px-6 pb-10 text-center text-xs ${t.footerText}`}>
-        Built for the Gemini hackathon, 2026. Open source.
+        Built by Tianwei Liu for the Google Cloud Rapid Agent Hackathon, 2026. Open source.
       </footer>
     </div>
   );

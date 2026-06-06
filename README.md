@@ -21,10 +21,13 @@ Three pieces that didn't exist together in one place before this project:
 
 ## Tech stack
 
-- **Frontend** — React 19 + TypeScript + Vite + Tailwind, with `@xyflow/react` (React Flow v12) for the canvas. Single-page workspace at `/app`, marketing landing at `/`.
-- **Backend** — Node + Express + `ws` WebSocket. One long-lived WS per session; the chat panel and canvas updates ride the same channel.
-- **Agent** — Gemini 3 Flash via `@google/genai`'s `chats.create` + `sendMessage` for an explicit ReAct loop. Custom tools (`update_canvas`, `push_results`, `run_pipeline`) drive the UI; standard MCP tools (`aggregate`, `find`, `collection-schema`) drive the database.
-- **Database access** — `mongodb-mcp-server` spawned as a stdio subprocess on each session. Tool declarations are auto-discovered + sanitized for Gemini's function-declaration schema.
+- **Frontend** — React 19 + TypeScript + Vite + Tailwind, with `@xyflow/react` (React Flow v12) for the canvas. Single-page workspace at `/app`, marketing landing at `/`, public tool reference at `/docs`.
+- **Backend** — Node + Express + `ws` WebSocket. One long-lived WS per session; chat traces and canvas updates ride the same channel.
+- **Agent** — [**Google Agent Development Kit**](https://adk.dev) (`@google/adk`) orchestrates the agent. `LlmAgent` wraps **Gemini 3 Flash** as the model, with our four custom tools (`update_canvas`, `push_results`, `run_pipeline`, `suggest_next_prompts`) registered as `FunctionTool`s and the MongoDB MCP server connected via `MCPToolset`. ADK runs the tool-call loop, validates arguments, and dispatches; we hook `beforeToolCallback` / `afterToolCallback` to stream the visual trace timeline to the UI.
+- **Database access** — `mongodb-mcp-server` spawned as a stdio subprocess. ADK's `MCPToolset` handles tool discovery + schema mapping so Gemini sees the database's allow-listed tools (`aggregate`, `find`, `count`, `collection-schema`, `list-collections`, `list-databases`) without us hand-sanitizing JSON Schema.
+- **Hosting** — Cloud Run. See [deployment.md](./deployment.md).
+
+This combination — `@google/adk` (orchestration) + Gemini (model) + MongoDB MCP server (partner integration) — sits squarely inside the Google Cloud Agent Builder ecosystem the Rapid Agent Hackathon asks for.
 
 ---
 

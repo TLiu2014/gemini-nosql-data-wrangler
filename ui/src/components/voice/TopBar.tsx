@@ -99,15 +99,16 @@ export default function TopBar({
           // `tfu-save-notice` runs a one-shot slide-in + soft pulse so the
           // chip catches the eye on appearance instead of sitting passively
           // alongside the status pills. Rendered on every viewport (no `md:`
-          // gate) so the user always gets save feedback.
+          // gate) so the user always gets the notice. The icon/prefix lives
+          // INSIDE the message string — saves convention "✓ …", warnings
+          // convention "⚠ …" — so we don't have to switch chrome here.
           <span
             key={saveNotice}
-            className="tfu-save-notice inline-flex items-center gap-1 rounded-full bg-white/25 px-2.5 py-1 text-[11px] font-medium"
+            className="tfu-save-notice inline-flex max-w-[40vw] items-center gap-1 rounded-full bg-white/25 px-2.5 py-1 text-[11px] font-medium"
             title={saveNotice}
           >
-            <span aria-hidden>✓</span>
             <span className="hidden truncate sm:inline">{saveNotice}</span>
-            <span className="sm:hidden">Saved</span>
+            <span className="sm:hidden">{saveNotice.slice(0, 1)}</span>
           </span>
         )}
         <StatusPill
@@ -210,7 +211,7 @@ export default function TopBar({
                   type="button"
                   onClick={() => {
                     onSettingsChange("apiKey", draftKey.trim());
-                    onSaveNotice?.("API key saved — reconnect to apply");
+                    onSaveNotice?.("✓ API key saved — reconnect to apply");
                   }}
                   className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-blue-700"
                 >
@@ -249,7 +250,7 @@ export default function TopBar({
                   onClick={() => {
                     onSettingsChange("mongoUri", draftMongoUri.trim());
                     onSaveNotice?.(
-                      "MongoDB connection string saved — reconnect to apply",
+                      "✓ MongoDB connection string saved — reconnect to apply",
                     );
                   }}
                   className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-blue-700"

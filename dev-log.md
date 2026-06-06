@@ -34,21 +34,21 @@ The deprecated branch is updated only when fresh deprecated code is moved out of
 
 **What we tried.** The first version of the system instruction routed all vibes/semantic queries to `$vectorSearch` against `sample_mflix.embedded_movies`'s `plot_vector_index`. The agent would emit something like `$vectorSearch: { queryText: "lone cowboys ruthless outlaws" }`.
 
-**Why we dropped it.** `$vectorSearch` requires a precomputed `queryVector` — a 1536-dim float array of **OpenAI ada-002 embeddings**, since that's what was used to populate the index. The agent has no way to generate one. Every attempt failed with either *"Exactly one and only one of `query` and `queryVector` can be present"* or silently returned 0 documents because Mongo ignored the unknown parameter. After 6+ retries the agent would hit the iteration cap and stop.
+**Why we dropped it.** `$vectorSearch` requires a precomputed `queryVector` — a 1536-dim float array compatible with the indexed `plot_embedding` field. The vectors that ship with `embedded_movies` come from a third-party embedding service we don't integrate with at request time, so the agent has no way to generate a matching `queryVector`. Every attempt failed with either *"Exactly one and only one of `query` and `queryVector` can be present"* or silently returned 0 documents because Mongo ignored the unknown parameter. After 6+ retries the agent would hit the iteration cap and stop.
 
 **What replaced it.** A two-path routing rule in the system instruction:
 - Conceptual / vibes-based queries → `$match` with the `$text` operator against `sample_mflix.movies` (which has a real text index on `cast`, `fullplot`, `genres`, `title`). The canvas still shows the purple `MQL_VECTOR_SEARCH` node so the demo aesthetic is preserved.
 - Exact-equality queries (named people, years, genres, etc.) → plain `$match`, rendered as the standard `MQL_MATCH` node.
 
-The vector index remains in the cluster for a future extension where we could wire in OpenAI or another ada-002-compatible embedding service.
+The vector index remains in the cluster for a future extension where we could wire in a compatible embedding service.
 
 ---
 
 ## 4. Browser-side Gemini embeddings as a `$vectorSearch` workaround
 
-**What we considered (briefly).** Generate query embeddings on the browser side using Gemini's `text-embedding-004` model, pass them as `queryVector` to `$vectorSearch`.
+**What we considered (briefly).** Generate query embeddings on the browser side using a Gemini embedding model and pass them as `queryVector` to `$vectorSearch`.
 
-**Why we didn't pursue it.** Dimension mismatch. Gemini's `text-embedding-004` produces 768-dim vectors; the indexed `plot_embedding` field is 1536-dim ada-002. Different embedding models live in different vector spaces — distances aren't comparable. We would have needed to re-embed the entire corpus with a Gemini model and create a new index, which was outside the hackathon scope.
+**Why we didn't pursue it.** Dimension mismatch. Gemini's text-embedding models produce different dimensions than the 1536-dim `plot_embedding` field in the sample dataset, and different embedding models live in different vector spaces — distances aren't comparable across them. We would have needed to re-embed the entire corpus with a Gemini model and create a new index, which was outside the hackathon scope.
 
 ---
 
@@ -62,7 +62,19 @@ The vector index remains in the cluster for a future extension where we could wi
 
 ---
 
-## 6. Voice-first status bar inside the chat sidebar
+## 6. Hand-rolled ReAct loop on `@google/genai`
+
+**What we tried.** Our first server-side agent was a custom ReAct loop driving `ai.chats.create()` + `chat.sendMessage()` from `@google/genai` directly. We dispatched tool calls ourselves, managed a `MAX_TOOL_ITERATIONS = 8` cap, dispatched custom tools (`update_canvas`, `push_results`, `run_pipeline`, `suggest_next_prompts`) and the MongoDB MCP tools via separate code paths, and emitted trace events for every loop iteration.
+
+**Why we dropped it.** Two reasons: (1) the **Google Cloud Rapid Agent Hackathon** requires the agent to live inside the **Google Cloud Agent Builder ecosystem**, and the bare Gemini API SDK isn't unambiguously part of that ecosystem — `@google/adk` (Agent Development Kit) is. (2) The hand-rolled loop duplicated a lot of plumbing that ADK provides for free: tool argument validation, function-declaration generation from typed schemas, MCP tool discovery + schema mapping, before/after-tool callbacks for observability.
+
+**What replaced it.** `@google/adk` (`LlmAgent` + `InMemoryRunner` + `MCPToolset` + `FunctionTool`). The four custom tools moved from `FunctionDeclaration` objects + a manual switch dispatch into `FunctionTool` instances with explicit `execute` callbacks. The MongoDB MCP server is now exposed via ADK's `MCPToolset` (separate stdio connection per session, allow-listed to six data-operation tools). Trace events still flow through the same WebSocket protocol; we hook ADK's `beforeToolCallback` / `afterToolCallback` to emit them. The UI didn't change at all — same `tool_call_start` / `tool_call_result` / `suggested_prompts` traces hit the chat panel.
+
+**Files**: `server/src/agent/agentLoop.ts` (and the older `customTools.ts` that returned `FunctionDeclaration[]`) live on the `deprecated` branch. Run the deprecated branch and the app behaves identically to the post-ADK build — useful as a fallback if we ever need to A/B between the two orchestrators.
+
+---
+
+## 7. Voice-first status bar inside the chat sidebar
 
 **What we tried.** A persistent StatusBar at the top of the left sidebar showing MongoDB Atlas + Gemini + Transcript connection states, with inline Connect / Disconnect / Mute buttons and a save-confirmation strip. Designed to make voice-session state legible in the chat panel.
 

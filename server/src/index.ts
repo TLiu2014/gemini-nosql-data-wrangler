@@ -8,10 +8,10 @@ import { refreshMflixCollections } from "./mcp/mflixRefresh.js";
 import { resolveApiKey, resolveMongoUri } from "./auth/apiKey.js";
 import { ClientSocket } from "./websocket/clientSocket.js";
 import { AgentLoop } from "./agent/agentLoop.js";
-// DEPRECATED: Live API streaming session. Replaced by the text-based ReAct
-// loop in Phase 2 (`agent/agentLoop.ts`). The original lives in
-// `server/deprecated/geminiStream.ts` for reference.
-// import { GeminiStreamSession } from "./websocket/geminiStream.js";
+// DEPRECATED: Earlier voice-streaming agent (Gemini Live API) and the
+// hand-rolled ReAct loop that briefly replaced it both live on the
+// `deprecated` git branch. The current `AgentLoop` is built on the Google
+// Agent Development Kit (`@google/adk`).
 import type { ClientMessage } from "./websocket/protocol.js";
 
 const env = loadEnv();
@@ -103,8 +103,10 @@ wss.on("connection", (ws: WsWebSocket) => {
       client.sendConnectionStatus("error", atlasDetail, "atlas");
     }
 
-    // 3. Build the ReAct agent loop. Uses a no-op MCP so the agent still
-    // works (canvas updates only) when Atlas is disconnected.
+    // 3. Build the ADK-based agent. Uses a no-op MCP for direct calls
+    //    (run_pipeline's $facet wrapper, Mflix refresh) so the agent still
+    //    works in canvas-only mode when Atlas is disconnected. The agent's
+    //    tool surface (MCPToolset) is omitted entirely in that case.
     const modelForSession = msg.geminiModel || env.GEMINI_MODEL;
     const languageForSession = msg.languageMode ?? "english";
     // Default to true if absent — older clients that don't ship this field
@@ -115,20 +117,21 @@ wss.on("connection", (ws: WsWebSocket) => {
       apiKey: apiKey.key,
       model: modelForSession,
       mcp: mcpForAgent,
+      mongoUri: mcp ? mongo.uri ?? null : null,
       client,
       languageMode: languageForSession,
       atlasAvailable: !!mcp,
       atlasDetail,
       enableSuggestedPrompts,
     });
-    // Surface the model name + tool count to the UI so it can show them in
-    // the sidebar status bar. This replaces the noisy `session.ready` trace
-    // event we used to emit into the chat timeline.
-    const toolCount =
-      (mcp ? mcp.geminiFunctionDeclarations().length : 0) + /* custom */ 2;
+    // Surface the model name + a coarse tool count to the UI. With ADK,
+    // tool discovery is lazy (the MCPToolset spawns its process on first
+    // use), so we estimate: 4 custom tools + 6 MCP tools when Atlas is up.
+    const customCount = enableSuggestedPrompts ? 4 : 3;
+    const mcpCount = mcp ? 6 : 0;
     client.sendConnectionStatus(
       "connected",
-      `${modelForSession} · ${toolCount} tools`,
+      `${modelForSession} · ${customCount + mcpCount} tools`,
       "gemini",
     );
     client.sendAgentStatus("idle");
@@ -215,7 +218,12 @@ wss.on("connection", (ws: WsWebSocket) => {
 
   ws.on("close", async () => {
     console.log("[ws] client disconnected");
-    agent = null;
+    if (agent) {
+      // Dispose the ADK MCPToolset so we don't leak `mongodb-mcp-server`
+      // subprocesses across reconnects.
+      await agent.dispose().catch(() => undefined);
+      agent = null;
+    }
     if (mcp) {
       await mcp.close().catch(() => undefined);
       mcp = null;

@@ -30,13 +30,13 @@ project end-to-end:
 2. Confirm. Loading takes 5–10 minutes; you should see eight `sample_*` databases when it finishes.
 3. Verify that `sample_mflix.embedded_movies` exists. This collection contains
    movies from the `Western`, `Action`, and `Fantasy` genres only (it's a
-   subset of `sample_mflix.movies`). Each document includes:
-   - `plot_embedding` — 1536-dim OpenAI `text-embedding-ada-002` vector,
-     stored as `binData` (this is what we query with `$vectorSearch`).
-   - `plot_embedding_voyage_3_large` — 2048-dim Voyage AI vector, also `binData`.
+   subset of `sample_mflix.movies`). Each document carries a `plot_embedding`
+   field — a pre-computed 1536-dim vector that ships with the sample dataset
+   — useful only if you wire in a compatible embedding service at request
+   time (see § 1.4 below).
 
    Heads up for the agent: vibes-based queries will only ever return Western /
-   Action / Fantasy results. The system instruction must mention this so the
+   Action / Fantasy results. The system instruction mentions this so the
    agent doesn't promise, say, a romcom search against this collection.
 
 ### 1.4 (Optional) Atlas Vector Search index
@@ -47,19 +47,19 @@ instruction routes conceptual / "vibes-based" queries to `$match` with the
 on the canvas is a UI choice — the execution underneath is text search.
 
 Why not real `$vectorSearch`? The pre-loaded `plot_embedding` field on
-`embedded_movies` is a 1536-dim OpenAI ada-002 vector. To query against it
-the client would need to generate ada-002 embeddings at request time, which
-requires an OpenAI key we don't ship with the demo. Gemini's
-`text-embedding-004` is 768-dim and lives in a different vector space, so
-it isn't a drop-in substitute. See `dev-log.md` for the longer story.
+`embedded_movies` is a 1536-dim vector produced by a third-party embedding
+service. To query against it, the client would need to generate vectors
+from the same model at request time. Gemini's text-embedding models
+produce different dimensions and live in a different vector space, so
+they aren't a drop-in substitute. See `dev-log.md` for the longer story.
 
-If you do want to extend the project to call live `$vectorSearch`, create the
-index in Atlas (`sample_mflix.embedded_movies` → Search Indexes → Atlas
+If you do want to extend the project to call live `$vectorSearch`, create
+an index in Atlas (`sample_mflix.embedded_movies` → Search Indexes → Atlas
 Vector Search → JSON editor), name it `plot_vector_index`, and use
 `numDimensions: 1536, similarity: "cosine", path: "plot_embedding"`. Then
-add a server-side `embed_text` tool that calls ada-002 and update the
-system instruction to route vibes queries to `$vectorSearch` with the
-returned vector.
+add a server-side `embed_text` tool that calls a compatible embedding
+service and update the system instruction to route vibes queries to
+`$vectorSearch` with the returned vector.
 
 ### 1.5 Grab the connection string
 1. Atlas → **Database** → **Connect** → **Drivers** → copy the URI.

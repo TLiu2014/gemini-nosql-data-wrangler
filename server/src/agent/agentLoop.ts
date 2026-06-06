@@ -1,169 +1,251 @@
+import { randomUUID } from "node:crypto";
 import {
-  GoogleGenAI,
-  type Chat,
-  type FunctionCall,
-  type FunctionDeclaration,
-} from "@google/genai";
+  Gemini,
+  InMemoryRunner,
+  LlmAgent,
+  MCPToolset,
+  type BaseTool,
+  type StdioConnectionParams,
+  type ToolUnion,
+} from "@google/adk";
+import type { Content } from "@google/genai";
 
 import type { MongoMcpClient } from "../mcp/mongoClient.js";
-import {
-  extractDocsFromMcpAggregate,
-  stripHeavyFieldsFromMcpResult,
-} from "../mcp/responseUtils.js";
+import { stripHeavyFieldsFromMcpResult } from "../mcp/responseUtils.js";
 import type { ClientSocket } from "../websocket/clientSocket.js";
 import type { LanguageMode } from "../websocket/protocol.js";
+import { buildCustomTools, CUSTOM_TOOL_NAMES } from "./customTools.js";
 import { buildSystemInstruction } from "./systemInstruction.js";
-import {
-  CUSTOM_TOOL_NAMES,
-  getCustomToolDeclarations,
-  isCustomToolName,
-  type CustomToolName,
-} from "./customTools.js";
-// HOLD: separated transcription model. Switching `echoUserSpeech` to a
-// stronger model didn't materially improve transcription quality — see
-// the discussion thread for the alternatives we're considering.
-// import { TRANSCRIPTION_MODEL } from "./models.js";
 
 /**
- * Hard cap on tool-call iterations per user turn. A well-behaved agent
- * needs 2-4 (update_canvas → aggregate → push_results, sometimes a
- * collection-schema lookup). Looping past 8 means the agent is stuck
- * retrying — better to surface a turn_complete than spin forever.
+ * Allow-list of MongoDB MCP tools we expose to the agent through ADK's
+ * {@link MCPToolset}. The MCP server publishes ~16+ tools, including Atlas
+ * admin operations we don't want in the agent's vocabulary. The same list
+ * lives in `mongoClient.ts` for the legacy direct path; keep the two in
+ * sync if you add/remove tools.
  */
-const MAX_TOOL_ITERATIONS = 8;
-
-/**
- * Phrases Gemini's transcription tends to invent when given silence,
- * music, or background noise. Add new ones here as we observe them. The
- * sentinel `__SILENCE__` is what we explicitly ask the model to output
- * when there's no speech.
- */
-const NOISE_TRANSCRIPTION_PATTERNS: RegExp[] = [
-  /^__silence__$/i,
-  /^\.+$/, // just periods
-  /^[\s\W]+$/, // only whitespace + punctuation
-  /^(thanks?( for watching)?|thank you|bye+|okay)\.?$/i, // common hallucinations
-  /^(music|silence|background music|\(music\))\.?$/i,
+const MCP_TOOLS_ALLOWLIST = [
+  "list-databases",
+  "list-collections",
+  "collection-schema",
+  "find",
+  "count",
+  "aggregate",
 ];
 
-function looksLikeNoiseTranscription(text: string): boolean {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return true;
-  if (trimmed.length < 3) return true; // single-letter / "uh" / etc.
-  return NOISE_TRANSCRIPTION_PATTERNS.some((re) => re.test(trimmed));
-}
+const APP_NAME = "gemini-nosql-data-wrangler";
+const SESSION_USER_ID = "user";
 
 export interface AgentLoopOptions {
   apiKey: string;
   model: string;
+  /** Existing MongoMcpClient used for direct (non-agent) MCP calls: probing
+   *  Atlas at startup, `run_pipeline`'s $facet wrapper, and the Mflix
+   *  reference refresh. The agent's own tool surface goes through ADK's
+   *  {@link MCPToolset} (separate connection) so the ADK orchestration is
+   *  the canonical path Gemini sees. */
   mcp: MongoMcpClient;
+  /** Connection string for the agent-side {@link MCPToolset}. We deliberately
+   *  spawn a second `mongodb-mcp-server` process for the agent rather than
+   *  sharing the existing transport — ADK owns the lifecycle of its toolset,
+   *  and entangling the two clients risks tearing down the wrong session. */
+  mongoUri: string | null;
   client: ClientSocket;
   languageMode: LanguageMode;
   atlasAvailable: boolean;
   atlasDetail?: string;
-  /** When false, the `suggest_next_prompts` tool is dropped from the chat
-   *  config and the follow-up-suggestions section is omitted from the
-   *  system instruction. Saves one tool call + a small token chunk per
-   *  turn for users who don't want the chips. Default true. */
   enableSuggestedPrompts?: boolean;
 }
 
 /**
- * Explicit ReAct loop driven by `gemini-3.1-flash-preview` (or any
- * `chats.create`-compatible model). Replaces the Live API streaming
- * session deprecated in Phase 1.
+ * Drives one user turn end-to-end on top of the Google Agent Development Kit.
  *
- * Flow per user turn:
- *   1. UI sends { type: "user.text", text }.
- *   2. `sendUserMessage()` forwards to the chat session.
- *   3. Loop until the model returns no function calls:
- *      - Emit `tool_call_start` trace for each function call.
- *      - Execute (custom tool → ClientSocket / MCP tool → MongoDB).
- *      - Emit `tool_call_result` trace with payload + duration.
- *      - Send function responses back to the model.
- *   4. Emit any final `agent_text` and a `turn_complete` trace.
+ * Architecture:
+ *   1. Lazy build of {@link LlmAgent} + {@link InMemoryRunner} on the first
+ *      user message — this lets the WebSocket "connected" signal arrive at
+ *      the UI before we pay the MCP-spawn cost.
+ *   2. Four custom tools wired through {@link FunctionTool}: `update_canvas`,
+ *      `push_results`, `run_pipeline`, `suggest_next_prompts`.
+ *   3. MongoDB MCP tools exposed via {@link MCPToolset} (allow-listed).
+ *   4. Per-turn tracing: `beforeToolCallback` / `afterToolCallback` emit
+ *      `tool_call_start` / `tool_call_result` trace events to the WebSocket.
+ *      Agent text comes from walking the {@link Event} stream and looking
+ *      for non-empty `text` parts in non-partial events.
  *
- * The Chat object persists for the lifetime of one WS connection, so
- * Gemini retains conversation memory across turns. We do NOT rebuild the
- * system instruction mid-session — the model tracks canvas state via its
- * own `update_canvas` calls in the chat history.
+ * This file replaces the hand-rolled ReAct loop that lived here pre-ADK.
+ * That implementation is preserved on the `deprecated` git branch as a
+ * fallback if we ever need to A/B between the two orchestrators.
  */
 export class AgentLoop {
-  private readonly ai: GoogleGenAI;
-  private chat: Chat | null = null;
-  /** Most recent canvas the agent committed to, used only for trace echoing. */
+  private readonly llm: Gemini;
+  private runner: InMemoryRunner | null = null;
+  private mcpToolset: MCPToolset | null = null;
+  private readonly sessionId = randomUUID();
+  /** Most recent canvas JSON the agent committed to. Read by the
+   *  instruction provider so each turn sees fresh state. */
   private currentCanvas: string | null = null;
   /** Prevents two user turns from racing each other's sendMessage calls. */
   private inFlight = false;
+  /** Per-tool start timestamps so the after-callback can compute duration.
+   *  Keyed by tool name; values are pushed/popped as a stack so re-entrant
+   *  calls (rare, but possible with parallel tool calls) stay matched. */
+  private readonly toolStartStack = new Map<string, number[]>();
 
   constructor(private readonly opts: AgentLoopOptions) {
-    this.ai = new GoogleGenAI({ apiKey: opts.apiKey });
+    this.llm = new Gemini({
+      model: opts.model,
+      apiKey: opts.apiKey,
+    });
   }
 
-  /** Lazily build the chat session. Reused across user turns. */
-  private ensureChat(): Chat {
-    if (this.chat) return this.chat;
+  /** Lazily build the runner. Reused across user turns within one session. */
+  private async ensureRunner(): Promise<InMemoryRunner> {
+    if (this.runner) return this.runner;
 
-    const mcpToolNames = this.opts.atlasAvailable
-      ? this.opts.mcp.geminiFunctionDeclarations().map((d) => d.name)
-      : [];
+    const tools: ToolUnion[] = [];
 
-    const suggestEnabled = this.opts.enableSuggestedPrompts !== false;
-    const systemInstruction = buildSystemInstruction({
-      currentCanvas: this.currentCanvas,
-      mcpToolNames,
-      atlasAvailable: this.opts.atlasAvailable,
-      atlasDetail: this.opts.atlasDetail,
-      languageMode: this.opts.languageMode,
-      enableSuggestedPrompts: suggestEnabled,
+    // 1) Our four custom tools, with the deps they close over.
+    const customTools = buildCustomTools({
+      client: this.opts.client,
+      setCurrentCanvas: (schema: unknown) => {
+        try {
+          this.currentCanvas = JSON.stringify(schema);
+        } catch {
+          /* swallow — currentCanvas is best-effort */
+        }
+      },
+      runPipelineFacet: (args) => this.runPipelineFacet(args),
     });
 
-    // MCP declarations come back with `parameters: unknown` because the
-    // sanitizer can't statically narrow JSON Schema → Gemini's Schema type.
-    // The runtime shape is valid; cast to satisfy the SDK signature.
-    // Drop the suggest_next_prompts declaration when the user has turned
-    // off the chip feature — the agent then can't call it at all (rather
-    // than being told to skip it via instruction), which is the cleanest
-    // way to save the per-turn tool call.
-    const customDecls = getCustomToolDeclarations().filter((d) =>
-      suggestEnabled
-        ? true
-        : (d.name as CustomToolName) !== CUSTOM_TOOL_NAMES.suggest_next_prompts,
-    );
-    const functionDeclarations: FunctionDeclaration[] = [
-      ...(this.opts.atlasAvailable
-        ? (this.opts.mcp.geminiFunctionDeclarations() as unknown as FunctionDeclaration[])
-        : []),
-      ...customDecls,
-    ];
+    const enableSuggested = this.opts.enableSuggestedPrompts !== false;
+    for (const tool of customTools) {
+      // Drop suggest_next_prompts entirely when the user has the setting off.
+      // The model literally can't call a tool it doesn't see, so we save the
+      // tokens + latency of a per-turn no-op call.
+      if (
+        !enableSuggested &&
+        tool.name === CUSTOM_TOOL_NAMES.suggest_next_prompts
+      ) {
+        continue;
+      }
+      tools.push(tool);
+    }
 
-    // Note: we used to emit a `session.ready` info trace here listing the
-    // model + tool names. The UI surfaces that in the sidebar's status bar
-    // (via `connection.status` detail) instead, so we drop it from the
-    // trace timeline where it was just noise.
-    console.log(
-      `[agent] session ready — model=${this.opts.model}, tools=${functionDeclarations.map((d) => d.name).join(", ")}`,
-    );
+    // 2) MongoDB MCP tools through ADK's MCPToolset (only when Atlas is
+    //    reachable AND we have a real URI — otherwise the agent runs in
+    //    "design-only" mode and the system instruction tells it so).
+    if (this.opts.atlasAvailable && this.opts.mongoUri) {
+      this.mcpToolset = new MCPToolset(
+        this.buildStdioParams(this.opts.mongoUri),
+        MCP_TOOLS_ALLOWLIST,
+      );
+      tools.push(this.mcpToolset);
+    }
 
-    this.chat = this.ai.chats.create({
-      model: this.opts.model,
-      config: {
-        systemInstruction: { parts: [{ text: systemInstruction }] },
-        tools: [{ functionDeclarations }],
+    const agent = new LlmAgent({
+      name: "gemini_data_wrangler",
+      description:
+        "Voice/text agent that builds MongoDB Aggregation Pipelines from natural language requests.",
+      model: this.llm,
+      // System instruction is rebuilt each invocation so the model always
+      // sees the CURRENT CANVAS block reflecting the latest update_canvas.
+      instruction: () =>
+        buildSystemInstruction({
+          currentCanvas: this.currentCanvas,
+          mcpToolNames: this.opts.atlasAvailable ? MCP_TOOLS_ALLOWLIST : [],
+          atlasAvailable: this.opts.atlasAvailable,
+          atlasDetail: this.opts.atlasDetail,
+          languageMode: this.opts.languageMode,
+          enableSuggestedPrompts: enableSuggested,
+        }),
+      tools,
+      beforeToolCallback: ({ tool, args }) => {
+        const startedAt = Date.now();
+        const stack = this.toolStartStack.get(tool.name) ?? [];
+        stack.push(startedAt);
+        this.toolStartStack.set(tool.name, stack);
+
+        this.opts.client.sendTrace({
+          kind: "tool_call_start",
+          label: tool.name,
+          payload: args,
+        });
+        return undefined;
+      },
+      afterToolCallback: ({ tool, response }) => {
+        const stack = this.toolStartStack.get(tool.name) ?? [];
+        const startedAt = stack.shift();
+        const durationMs =
+          startedAt != null ? Date.now() - startedAt : undefined;
+
+        // For MCP responses, run our heavy-field strip so the model's
+        // tool-response budget doesn't get blown by big vector fields.
+        // Custom tools always return small structured responses, so we
+        // skip the strip on those.
+        const isMcpTool = isLikelyMcpToolName(tool.name);
+        const payload = isMcpTool
+          ? stripHeavyFieldsFromMcpResult(response)
+          : response;
+
+        const isError =
+          this.responseLooksLikeError(payload) ||
+          this.responseLooksLikeError(response);
+
+        this.opts.client.sendTrace({
+          kind: "tool_call_result",
+          label: tool.name,
+          payload,
+          isError,
+          durationMs,
+        });
+
+        // Returning undefined means "use the original response unchanged".
+        // For MCP tools we want the model to see the stripped version too
+        // (otherwise huge `plot_embedding` arrays burn its context budget),
+        // so we return the cleaned object.
+        return isMcpTool && payload !== response
+          ? (payload as Record<string, unknown>)
+          : undefined;
       },
     });
-    return this.chat;
+
+    this.runner = new InMemoryRunner({ agent, appName: APP_NAME });
+
+    // Create the session once. Subsequent turns reuse it so Gemini keeps
+    // conversation memory across requests.
+    await this.runner.sessionService.createSession({
+      appName: APP_NAME,
+      userId: SESSION_USER_ID,
+      sessionId: this.sessionId,
+    });
+
+    const toolNames = (
+      await Promise.all(
+        tools.map(async (t) => {
+          if ("name" in t && typeof (t as BaseTool).name === "string") {
+            return [(t as BaseTool).name];
+          }
+          // Toolset — pull its tools' names.
+          if (typeof (t as MCPToolset).getTools === "function") {
+            const inner = await (t as MCPToolset).getTools();
+            return inner.map((it) => it.name);
+          }
+          return [];
+        }),
+      )
+    ).flat();
+
+    console.log(
+      `[agent] session ready — model=${this.opts.model}, tools=${toolNames.join(", ")}`,
+    );
+
+    return this.runner;
   }
 
   /**
-   * Drive one user turn end-to-end. The ReAct loop runs synchronously
-   * inside this call — function calls, tool executions, and any follow-up
-   * model rounds are all sequential. Trace events go out as we go so the
-   * UI doesn't sit blank waiting for `await` to return.
-   *
-   * Accepts either a text message (typed) or a push-to-talk audio clip
-   * (base64 + mimeType). Audio rides as an `inlineData` Part — the model
-   * transcribes and reasons in one shot.
+   * Drive one user turn end-to-end. Caller passes either a text message or
+   * a base64-encoded audio clip (we forward as an `inlineData` Part — the
+   * model transcribes and reasons in one shot).
    */
   async sendUserMessage(
     input: string | { audio: { mimeType: string; data: string } },
@@ -176,9 +258,8 @@ export class AgentLoop {
       });
       return;
     }
-    const turnStartedAt = Date.now();
     this.inFlight = true;
-    const chat = this.ensureChat();
+    const turnStartedAt = Date.now();
 
     const inputKind = typeof input === "string" ? "text" : "audio";
     const inputPreview =
@@ -186,8 +267,9 @@ export class AgentLoop {
         ? input.slice(0, 60)
         : `${input.audio.mimeType} (${input.audio.data.length}b base64)`;
     console.log(`[agent] turn start (${inputKind}): ${inputPreview}`);
-    // Visible "Thinking…" milestone so the trace timeline has a first step
-    // before any tool call fires.
+
+    // Visible "Thinking…" milestone — the chat panel renders it inline
+    // before the first tool call lands.
     this.opts.client.sendTrace({
       kind: "info",
       label: "thinking",
@@ -195,64 +277,42 @@ export class AgentLoop {
     });
 
     try {
-      let message;
-      if (typeof input === "string") {
-        message = input;
-      } else {
-        // The browser-side Web Speech API (`useWebSpeech` hook) now feeds
-        // the visible transcript directly into the trace timeline — much
-        // higher fidelity than a Gemini `generateContent` transcription
-        // side-call. Audio still goes to the agent for reasoning.
-        // Server-side `echoUserSpeech` is kept as a fallback but not
-        // invoked here; see the chat discussion for why.
-        // const heardSpeech = await this.echoUserSpeech(input.audio);
-        // if (!heardSpeech) return;
-        message = [
-          {
-            inlineData: {
-              mimeType: input.audio.mimeType,
-              data: input.audio.data,
-            },
-          },
-        ];
-      }
-      let response = await chat.sendMessage({ message });
+      const runner = await this.ensureRunner();
+      const newMessage: Content =
+        typeof input === "string"
+          ? { role: "user", parts: [{ text: input }] }
+          : {
+              role: "user",
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: input.audio.mimeType,
+                    data: input.audio.data,
+                  },
+                },
+              ],
+            };
 
-      for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
-        const text = response.text;
-        if (text && text.trim()) {
-          console.log(
-            `[agent] iter ${iter}: emitting agent_text (${text.length} chars)`,
-          );
-          this.opts.client.sendTrace({ kind: "agent_text", text });
-        }
-
-        const calls = response.functionCalls ?? [];
-        if (calls.length === 0) {
-          console.log(`[agent] iter ${iter}: no more tool calls — turn done`);
-          break;
-        }
-
-        const fnResponses = await this.dispatchCalls(calls);
-
-        // Send tool responses back to continue the ReAct loop.
-        response = await chat.sendMessage({
-          message: fnResponses.map((fr) => ({
-            functionResponse: {
-              id: fr.id,
-              name: fr.name,
-              response: fr.response,
-            },
-          })),
-        });
-
-        if (iter === MAX_TOOL_ITERATIONS - 1 && (response.functionCalls?.length ?? 0) > 0) {
-          this.opts.client.sendTrace({
-            kind: "error",
-            text: `Stopping after ${MAX_TOOL_ITERATIONS} tool-call iterations — the agent looks stuck.`,
-            isError: true,
-          });
-        }
+      let agentTextEmitted = "";
+      for await (const event of runner.runAsync({
+        userId: SESSION_USER_ID,
+        sessionId: this.sessionId,
+        newMessage,
+      })) {
+        // Skip partial streaming chunks — we emit a single agent_text per
+        // unique non-partial text content to match the pre-ADK behavior.
+        if (event.partial) continue;
+        const parts = event.content?.parts ?? [];
+        const collected = parts
+          .map((p) => ("text" in p && typeof p.text === "string" ? p.text : ""))
+          .filter(Boolean)
+          .join("");
+        if (!collected) continue;
+        // ADK may emit the same final text content as both a "running" and
+        // "final" event. Don't double-emit identical text.
+        if (collected === agentTextEmitted) continue;
+        agentTextEmitted = collected;
+        this.opts.client.sendTrace({ kind: "agent_text", text: collected });
       }
     } catch (err) {
       console.error("[agent] turn failed:", err);
@@ -273,238 +333,41 @@ export class AgentLoop {
   }
 
   /**
-   * One-shot transcription of a push-to-talk clip, separate from the main
-   * ReAct chat session, so we can echo "what the user said" into the trace
-   * timeline. Best-effort — if transcription fails we just skip the echo;
-   * the main `sendMessage()` with the audio Part still runs.
-   */
-  /**
-   * Transcribe the user's audio clip and emit a `user_text` trace.
-   * Returns true if the clip contained real speech (so the caller can
-   * proceed with the main chat call), false if it looks like silence /
-   * noise / a hallucination (caller should skip the chat call).
-   */
-  private async echoUserSpeech(audio: {
-    mimeType: string;
-    data: string;
-  }): Promise<boolean> {
-    try {
-      // HOLD: previously used a separate `TRANSCRIPTION_MODEL` here for
-      // higher-fidelity ASR. It didn't materially improve quality, so we're
-      // back to using the agent's model until we pick a better approach
-      // (browser-side STT, Live API ASR, dedicated speech model, etc.).
-      const result = await this.ai.models.generateContent({
-        model: this.opts.model,
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { inlineData: { mimeType: audio.mimeType, data: audio.data } },
-              {
-                text:
-                  "Transcribe this audio verbatim. Preserve disfluencies, do not correct grammar, do not paraphrase. Output only the words spoken, with no commentary, no quotes, no labels. " +
-                  "If the audio contains no clear speech (silence, noise, music, breathing), output exactly the single token: __SILENCE__ — do not invent or paraphrase content.",
-              },
-            ],
-          },
-        ],
-      });
-      const text = (result.text ?? "").trim();
-      if (!text) return false;
-      if (looksLikeNoiseTranscription(text)) {
-        console.log(`[agent] dropping noise transcription: ${text}`);
-        return false;
-      }
-      this.opts.client.sendTrace({ kind: "user_text", text });
-      return true;
-    } catch (err) {
-      console.warn("[agent] transcription side-call failed:", err);
-      // If transcription fails, assume the audio is real and let the main
-      // chat call handle it — don't silently drop user input.
-      return true;
-    }
-  }
-
-  /** Execute each function call, emit traces, return responses for the next round. */
-  private async dispatchCalls(
-    calls: FunctionCall[],
-  ): Promise<
-    Array<{ id?: string; name: string; response: Record<string, unknown> }>
-  > {
-    const responses: Array<{
-      id?: string;
-      name: string;
-      response: Record<string, unknown>;
-    }> = [];
-
-    console.log(
-      `[agent] dispatching ${calls.length} tool call(s): ${calls.map((c) => c.name).join(", ")}`,
-    );
-
-    for (const call of calls) {
-      const name = call.name ?? "";
-      const args = (call.args ?? {}) as Record<string, unknown>;
-
-      const argsPreview = (() => {
-        try {
-          const s = JSON.stringify(args);
-          return s.length > 200 ? s.slice(0, 200) + "…" : s;
-        } catch {
-          return "<unserializable>";
-        }
-      })();
-      console.log(`[agent] → ${name} args=${argsPreview}`);
-
-      this.opts.client.sendTrace({
-        kind: "tool_call_start",
-        label: name,
-        payload: args,
-      });
-
-      const startedAt = Date.now();
-      const outcome = await this.executeTool(name, args);
-      const durationMs = Date.now() - startedAt;
-
-      const responsePreview = (() => {
-        try {
-          const s = JSON.stringify(outcome.response);
-          return s.length > 200 ? s.slice(0, 200) + "…" : s;
-        } catch {
-          return "<unserializable>";
-        }
-      })();
-      console.log(
-        `[agent] ← ${name} ${outcome.isError ? "ERROR" : "ok"} in ${durationMs}ms result=${responsePreview}`,
-      );
-
-      this.opts.client.sendTrace({
-        kind: "tool_call_result",
-        label: name,
-        payload: outcome.response,
-        isError: !!outcome.isError,
-        durationMs,
-      });
-
-      responses.push({ id: call.id, name, response: outcome.response });
-    }
-
-    return responses;
-  }
-
-  private async executeTool(
-    name: string,
-    args: Record<string, unknown>,
-  ): Promise<{ response: Record<string, unknown>; isError?: boolean }> {
-    if (isCustomToolName(name)) {
-      // run_pipeline is async (it calls back into MCP) — handle it
-      // separately from the synchronous custom tools.
-      if (name === CUSTOM_TOOL_NAMES.run_pipeline) {
-        return this.executeRunPipeline(args);
-      }
-      return this.executeCustomTool(name, args);
-    }
-    if (this.opts.mcp.isMcpToolName(name)) {
-      if (!this.opts.mcp.isConnected()) {
-        return {
-          response: {
-            error:
-              "MongoDB Atlas is not connected. Ask the user to configure the connection string in Settings.",
-          },
-          isError: true,
-        };
-      }
-      try {
-        const raw = await this.opts.mcp.callTool(name, args);
-        const cleaned = stripHeavyFieldsFromMcpResult(raw);
-        const isErr = !!(cleaned as { isError?: boolean })?.isError;
-        return { response: { result: cleaned }, isError: isErr };
-      } catch (err) {
-        return { response: { error: String(err) }, isError: true };
-      }
-    }
-    return {
-      response: { error: `Unknown tool: ${name}` },
-      isError: true,
-    };
-  }
-
-  /**
-   * Execute the canvas pipeline once and populate every stage's results
-   * tab with a preview. Uses `$facet` so the underlying pipeline still
-   * sees the full collection — `preview_limit` is applied per branch and
-   * only affects what the UI shows, not the math.
+   * `run_pipeline`'s server-side implementation. Builds a single `$facet`
+   * aggregation that runs every stage prefix in one round-trip, dispatches
+   * `push_results` per stage, and returns a small summary to the agent.
    *
-   * Branch layout:
-   *   s0: [ { $limit: K } ]                          ← raw collection (Source stage)
-   *   s1: [ pipeline[0], { $limit: K } ]             ← after first pipeline step
-   *   ...
-   *   sN: [ ...pipeline, { $limit: K } ]             ← final stage
-   *
-   * The final branch also gets `$limit` — these are previews, and Atlas
-   * will reject `$facet` branches that return more than 16MB anyway.
+   * The fast path is one `$facet` aggregate. If that errors (malformed
+   * prefix, single branch exceeded 16MB, etc.) we fall back to N parallel
+   * prefix-aggregates so the tabs that DO succeed still populate.
    */
-  private async executeRunPipeline(
-    args: Record<string, unknown>,
-  ): Promise<{ response: Record<string, unknown>; isError?: boolean }> {
-    if (!this.opts.mcp.isConnected()) {
-      return {
-        response: {
-          error:
-            "MongoDB Atlas is not connected. Ask the user to configure the connection string in Settings.",
-        },
-        isError: true,
-      };
-    }
+  private async runPipelineFacet(args: {
+    database: string;
+    collection: string;
+    pipeline: unknown[];
+    stageIds: string[];
+    previewLimit: number;
+  }): Promise<{
+    previewed: Array<{ stageId: string; rows: number }>;
+    final_stage_id: string;
+    final_row_count: number;
+    final_rows_sample: unknown[];
+    execution_mode: "facet" | "sequential_fallback";
+  }> {
+    const { database, collection, pipeline, stageIds, previewLimit } = args;
 
-    const database = typeof args.database === "string" ? args.database : null;
-    const collection =
-      typeof args.collection === "string" ? args.collection : null;
-    const pipeline = Array.isArray(args.pipeline) ? args.pipeline : null;
-    const stageIds = Array.isArray(args.stage_ids)
-      ? (args.stage_ids.filter((s) => typeof s === "string") as string[])
-      : null;
-    const previewLimit =
-      typeof args.preview_limit === "number" && args.preview_limit > 0
-        ? Math.floor(args.preview_limit)
-        : 20;
-
-    if (!database || !collection || !pipeline || !stageIds) {
-      return {
-        response: {
-          error:
-            "run_pipeline requires database (string), collection (string), pipeline (array), stage_ids (array of strings).",
-        },
-        isError: true,
-      };
-    }
-    if (stageIds.length !== pipeline.length + 1) {
-      return {
-        response: {
-          error: `stage_ids.length (${stageIds.length}) must equal pipeline.length + 1 (${pipeline.length + 1}). Index 0 is the source stage; index i (i >= 1) is the stage after applying pipeline[i-1].`,
-        },
-        isError: true,
-      };
-    }
-
-    // Fast path: one $facet aggregate fetches every stage's preview in a
-    // single round-trip. Slow path (fallback): if $facet rejects (e.g.
-    // because one prefix is malformed, or the result blows the 16MB
-    // per-branch ceiling), run N sequential prefix-aggregate calls — that
-    // way the stages that DO work still populate.
     const facetBranches: Record<string, unknown[]> = {};
     for (let i = 0; i < stageIds.length; i++) {
       const prefix = pipeline.slice(0, i);
       facetBranches[`s${i}`] = [...prefix, { $limit: previewLimit }];
     }
-    const facetPipeline = [{ $facet: facetBranches }];
 
-    const facetResult = await this.tryFacetPipeline(
-      database,
-      collection,
-      facetPipeline,
-    );
     let perStageRows: Map<string, unknown[]>;
-    let usedFallback = false;
+    let executionMode: "facet" | "sequential_fallback" = "facet";
+
+    const facetResult = await this.tryFacetPipeline(database, collection, [
+      { $facet: facetBranches },
+    ]);
 
     if (facetResult.ok) {
       perStageRows = new Map();
@@ -513,7 +376,7 @@ export class AgentLoop {
         perStageRows.set(stageIds[i], Array.isArray(branch) ? branch : []);
       }
     } else {
-      usedFallback = true;
+      executionMode = "sequential_fallback";
       console.warn(
         `[agent] run_pipeline: $facet failed (${facetResult.errorMessage}); falling back to sequential prefix aggregates`,
       );
@@ -526,8 +389,6 @@ export class AgentLoop {
       );
     }
 
-    // Dispatch preview rows per stage. Track counts so we can echo a
-    // summary back to the agent without including the full data.
     const previewed: Array<{ stageId: string; rows: number }> = [];
     for (const stageId of stageIds) {
       const rows = perStageRows.get(stageId) ?? [];
@@ -535,25 +396,17 @@ export class AgentLoop {
       previewed.push({ stageId, rows: rows.length });
     }
 
-    // Return the final stage's rows to the agent so it can summarize. Cap
-    // to a small slice so we don't blow the function-response budget on
-    // wide documents.
     const finalRows = perStageRows.get(stageIds[stageIds.length - 1]) ?? [];
     const SUMMARY_ROW_CAP = 5;
     return {
-      response: {
-        ok: true,
-        previewed,
-        execution_mode: usedFallback ? "sequential_fallback" : "facet",
-        final_stage_id: stageIds[stageIds.length - 1],
-        final_row_count: finalRows.length,
-        final_rows_sample: finalRows.slice(0, SUMMARY_ROW_CAP),
-      },
+      previewed,
+      execution_mode: executionMode,
+      final_stage_id: stageIds[stageIds.length - 1],
+      final_row_count: finalRows.length,
+      final_rows_sample: finalRows.slice(0, SUMMARY_ROW_CAP),
     };
   }
 
-  /** Run the consolidated $facet aggregate. Returns ok+facetDoc or an
-   *  error message; never throws so the caller can choose to fall back. */
   private async tryFacetPipeline(
     database: string,
     collection: string,
@@ -562,6 +415,9 @@ export class AgentLoop {
     | { ok: true; facetDoc: Record<string, unknown> }
     | { ok: false; errorMessage: string }
   > {
+    if (!this.opts.mcp.isConnected()) {
+      return { ok: false, errorMessage: "MongoDB MCP not connected" };
+    }
     let raw: unknown;
     try {
       raw = await this.opts.mcp.callTool("aggregate", {
@@ -577,17 +433,13 @@ export class AgentLoop {
       const text = JSON.stringify(cleaned).slice(0, 200);
       return { ok: false, errorMessage: `MCP isError: ${text}` };
     }
-    const docs = extractDocsFromMcpAggregate(cleaned);
-    const facetDoc = (docs[0] ?? null) as Record<string, unknown> | null;
-    if (!facetDoc) {
+    const docs = extractFirstFacetDoc(cleaned);
+    if (!docs) {
       return { ok: false, errorMessage: "no doc returned from $facet" };
     }
-    return { ok: true, facetDoc };
+    return { ok: true, facetDoc: docs };
   }
 
-  /** Fallback: run N prefix-aggregate calls in parallel. If any individual
-   *  prefix fails we still return whatever the others produced — better
-   *  than a turn where every tab stays placeholder. */
   private async runSequentialPrefixAggregates(
     database: string,
     collection: string,
@@ -607,13 +459,10 @@ export class AgentLoop {
         });
         const cleaned = stripHeavyFieldsFromMcpResult(raw);
         if ((cleaned as { isError?: boolean })?.isError) {
-          console.warn(
-            `[agent] fallback prefix aggregate for ${stageId} (idx ${i}) returned isError`,
-          );
           out.set(stageId, []);
           return;
         }
-        const docs = extractDocsFromMcpAggregate(cleaned);
+        const docs = extractAggregateDocs(cleaned);
         out.set(stageId, docs);
       } catch (err) {
         console.warn(
@@ -627,76 +476,82 @@ export class AgentLoop {
     return out;
   }
 
-  private executeCustomTool(
-    name: string,
-    args: Record<string, unknown>,
-  ): { response: Record<string, unknown>; isError?: boolean } {
-    if (name === CUSTOM_TOOL_NAMES.update_canvas) {
-      const schema = args.schema;
-      if (!schema || typeof schema !== "object") {
-        return {
-          response: { error: "update_canvas requires a `schema` object" },
-          isError: true,
-        };
-      }
-      this.opts.client.sendCanvasUpdate(schema);
-      try {
-        this.currentCanvas = JSON.stringify(schema);
-      } catch {
-        /* swallow — currentCanvas is only used for downstream trace echoes */
-      }
-      return { response: { ok: true } };
-    }
-    if (name === CUSTOM_TOOL_NAMES.suggest_next_prompts) {
-      const rawPrompts = Array.isArray(args.prompts) ? args.prompts : null;
-      if (!rawPrompts) {
-        return {
-          response: {
-            error: "suggest_next_prompts requires a `prompts` array",
-          },
-          isError: true,
-        };
-      }
-      // Defensive normalization: coerce labels/prompts to strings, drop
-      // malformed entries, cap at 3 so the UI doesn't fill with chips.
-      const prompts: Array<{ label: string; prompt: string }> = [];
-      for (const p of rawPrompts) {
-        if (!p || typeof p !== "object") continue;
-        const obj = p as Record<string, unknown>;
-        const label = typeof obj.label === "string" ? obj.label.trim() : "";
-        const prompt = typeof obj.prompt === "string" ? obj.prompt.trim() : "";
-        if (!label || !prompt) continue;
-        prompts.push({ label, prompt });
-        if (prompts.length >= 3) break;
-      }
-      this.opts.client.sendTrace({
-        kind: "suggested_prompts",
-        prompts,
-      });
-      return { response: { ok: true, count: prompts.length } };
-    }
-    if (name === CUSTOM_TOOL_NAMES.push_results) {
-      const stageId = typeof args.stageId === "string" ? args.stageId : null;
-      const rows = Array.isArray(args.rows) ? args.rows : null;
-      if (!stageId || !rows) {
-        return {
-          response: {
-            error:
-              "push_results requires `stageId` (string) and `rows` (array)",
-          },
-          isError: true,
-        };
-      }
-      this.opts.client.sendResults({
-        stageId,
-        label: typeof args.label === "string" ? args.label : undefined,
-        rows,
-      });
-      return { response: { ok: true, count: rows.length } };
-    }
+  /** Build the StdioConnectionParams ADK's MCPToolset needs to spawn a
+   *  fresh `mongodb-mcp-server` for the agent's tool surface. Same args we
+   *  pass from {@link MongoMcpClient} so the two stay in sync. */
+  private buildStdioParams(connectionString: string): StdioConnectionParams {
     return {
-      response: { error: `Unhandled custom tool: ${name}` },
-      isError: true,
+      type: "StdioConnectionParams",
+      serverParams: {
+        command: "npx",
+        args: ["-y", "mongodb-mcp-server@latest", "--readOnly"],
+        env: {
+          ...process.env,
+          MDB_MCP_CONNECTION_STRING: connectionString,
+        } as Record<string, string>,
+      },
     };
   }
+
+  private responseLooksLikeError(value: unknown): boolean {
+    if (!value || typeof value !== "object") return false;
+    const v = value as Record<string, unknown>;
+    if (v.isError === true) return true;
+    if (typeof v.error === "string" && v.error.length > 0) return true;
+    return false;
+  }
+
+  /** Dispose the agent's MCP toolset. Called when the WS disconnects so we
+   *  don't leak `mongodb-mcp-server` subprocesses. */
+  async dispose(): Promise<void> {
+    try {
+      await this.mcpToolset?.close();
+    } catch (err) {
+      console.warn("[agent] dispose: MCPToolset close failed:", err);
+    }
+    this.mcpToolset = null;
+    this.runner = null;
+  }
+}
+
+/* ───────────────────── helpers ───────────────────── */
+
+function isLikelyMcpToolName(name: string): boolean {
+  return MCP_TOOLS_ALLOWLIST.includes(name);
+}
+
+/**
+ * Parse the docs out of an MCP `aggregate` response. MCP returns a content
+ * array of text entries; the documents are emitted as separate JSON-parsable
+ * text fragments. Permissive parser — anything that JSON-parses to an
+ * object/array contributes its docs.
+ */
+function extractAggregateDocs(raw: unknown): unknown[] {
+  if (!raw || typeof raw !== "object") return [];
+  const r = raw as { content?: Array<{ type?: string; text?: string }> };
+  if (!Array.isArray(r.content)) return [];
+  const docs: unknown[] = [];
+  for (const entry of r.content) {
+    if (entry?.type !== "text" || typeof entry.text !== "string") continue;
+    const text = entry.text.trim();
+    if (!text || (text[0] !== "{" && text[0] !== "[")) continue;
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) docs.push(...parsed);
+      else if (parsed && typeof parsed === "object") docs.push(parsed);
+    } catch {
+      /* skip non-JSON fragments */
+    }
+  }
+  return docs;
+}
+
+function extractFirstFacetDoc(
+  raw: unknown,
+): Record<string, unknown> | null {
+  const docs = extractAggregateDocs(raw);
+  if (docs.length === 0) return null;
+  const first = docs[0];
+  if (!first || typeof first !== "object") return null;
+  return first as Record<string, unknown>;
 }

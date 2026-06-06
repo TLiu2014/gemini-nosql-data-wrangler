@@ -18,7 +18,7 @@ export const SAMPLE_MFLIX_EMBEDDED_MOVIES: Array<Record<string, unknown>> = [
     runtime: 106,
     cast: ["Oliver Reed", "Raquel Welch", "Richard Chamberlain", "Michael York"],
     imdb: { rating: 7.3, votes: 11502 },
-    plot_embedding: "<binData 1536-dim ada-002>",
+    plot_embedding: "<binData 1536-dim plot vector>",
   },
   {
     _id: "573a13a6f29313caabd13d24",
@@ -29,7 +29,7 @@ export const SAMPLE_MFLIX_EMBEDDED_MOVIES: Array<Record<string, unknown>> = [
     runtime: 148,
     cast: ["Leonardo DiCaprio", "Joseph Gordon-Levitt", "Ellen Page"],
     imdb: { rating: 8.8, votes: 1992045 },
-    plot_embedding: "<binData 1536-dim ada-002>",
+    plot_embedding: "<binData 1536-dim plot vector>",
   },
   {
     _id: "573a13aaf29313caabd1d8a3",
@@ -40,6 +40,6 @@ export const SAMPLE_MFLIX_EMBEDDED_MOVIES: Array<Record<string, unknown>> = [
     runtime: 120,
     cast: ["Tom Hardy", "Charlize Theron", "Nicholas Hoult"],
     imdb: { rating: 8.1, votes: 858213 },
-    plot_embedding: "<binData 1536-dim ada-002>",
+    plot_embedding: "<binData 1536-dim plot vector>",
   },
 ];

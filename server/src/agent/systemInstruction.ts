@@ -61,7 +61,7 @@ APP HELP: If the user asks about the app's features (Settings, the canvas, the S
 const DATASET = `You operate against a MongoDB Atlas cluster preloaded with the official \`sample_mflix\` sample dataset. The collections you care about:
 
 - \`sample_mflix.movies\` — full catalog. Has a text index on \`cast\`, \`fullplot\`, \`genres\`, \`title\`. **This is the collection you use for both keyword (\`$match\`) and semantic (\`$match + $text\`) queries.**
-- \`sample_mflix.embedded_movies\` — a SUBSET of \`movies\`, limited to genres \`Western\`, \`Action\`, and \`Fantasy\`. Each document carries a \`plot_embedding\` field (1536-dim OpenAI ada-002 vector). An Atlas Vector Search index named \`plot_vector_index\` exists on it, but **this environment cannot generate query embeddings**, so \`$vectorSearch\` is not invocable here. See the routing rule below.
+- \`sample_mflix.embedded_movies\` — a SUBSET of \`movies\`, limited to genres \`Western\`, \`Action\`, and \`Fantasy\`. Each document carries a \`plot_embedding\` field (a 1536-dim pre-computed vector that ships with the sample dataset). An Atlas Vector Search index named \`plot_vector_index\` exists on it, but **this environment cannot generate compatible query vectors**, so \`$vectorSearch\` is not invocable here. See the routing rule below.
 - Other collections (\`comments\`, \`users\`, \`theaters\`, \`sessions\`) exist but rarely matter for this demo.`;
 
 const TOOLING_RULE = `### CRITICAL ROUTING RULE
@@ -94,7 +94,7 @@ For path-2 vibes queries, the actual \`aggregate\` tool call MUST use \`$match +
 
 ### CRITICAL: DO NOT USE \`$vectorSearch\` DIRECTLY
 
-This environment does NOT have an embedding service wired in. The \`$vectorSearch\` aggregation stage REQUIRES a precomputed \`queryVector\` (a 1536-dim float array of OpenAI ada-002 embeddings), which you cannot generate. Any call to \`$vectorSearch\` with a text string under \`query\`, \`queryText\`, or \`queryString\` WILL FAIL — either with "Exactly one and only one of query and queryVector can be present", or by silently returning 0 documents because the parameter is ignored.
+This environment does NOT have an embedding service wired in. The \`$vectorSearch\` aggregation stage REQUIRES a precomputed \`queryVector\` (a 1536-dim float array compatible with the indexed \`plot_embedding\` vectors), which you cannot generate. Any call to \`$vectorSearch\` with a text string under \`query\`, \`queryText\`, or \`queryString\` WILL FAIL — either with "Exactly one and only one of query and queryVector can be present", or by silently returning 0 documents because the parameter is ignored.
 
 **Do not call \`aggregate\` with a \`$vectorSearch\` stage.** Use \`$match + $text\` against \`movies\` as shown above instead.
 
