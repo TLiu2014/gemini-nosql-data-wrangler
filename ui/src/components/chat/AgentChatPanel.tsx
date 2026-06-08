@@ -52,6 +52,11 @@ interface AgentChatPanelProps {
    *  the empty state AND any agent-suggested follow-ups after each turn.
    *  Mirrors the server-side flag passed via the init message. */
   enableSuggestedPrompts: boolean;
+  /** Auto-send a chip's prompt when clicked instead of just filling the
+   *  composer. Mirrored from `useSettings.autoSendSuggestion` so changing
+   *  the checkbox in chat takes effect across the app. */
+  autoSendSuggestion: boolean;
+  onAutoSendSuggestionChange: (v: boolean) => void;
   /**
    * Show the text-input + Send button below the chat. On by default in the
    * text-first UX. Toggle in Settings → Chat Panel.
@@ -73,29 +78,122 @@ interface AgentChatPanelProps {
 }
 
 /**
- * Demo prompt suggestions shown in the empty chat state. Clicking a chip
- * fills the input field with the first message of that demo — it does NOT
- * auto-send, so the user can review/edit before hitting Enter. This keeps
- * the agent's reasoning fully interactive while saving judges typing time.
+ * Hardcoded demo scripts. Each demo is an ordered list of user-input
+ * sentences. The chat panel uses these for two things:
+ *   1. Empty state: render the FIRST step of each demo as an opener chip.
+ *   2. Post-turn: if the user's last prompt matches step N of a demo
+ *      (via exact-text match), render step N+1 as the leading chip
+ *      alongside Gemini's `suggest_next_prompts` chips.
+ *
+ * Keep the prompt strings character-identical to the hackathon script so
+ * exact-text matching works without fuzzy fallbacks.
  */
-const DEMO_PROMPTS: Array<{ label: string; prompt: string; hint: string }> = [
+interface DemoFlow {
+  id: "vibes" | "join" | "bi";
+  /** Long human-readable name, used only for the empty-state opener chip
+   *  ("Demo 1 · Vibes search"). */
+  displayName: string;
+  steps: Array<{
+    /** Very short chip caption (1-4 words). Mirrors the style of Gemini's
+     *  `suggest_next_prompts` labels so the hardcoded next-step chip
+     *  visually blends with the AI-generated ones. */
+    label: string;
+    /** The actual user-input sentence dispatched when the chip is clicked. */
+    prompt: string;
+  }>;
+}
+
+const DEMO_FLOWS: DemoFlow[] = [
   {
-    label: "Vibes search",
-    prompt:
-      "Find me movies about lone cowboys, ruthless outlaws, and dusty gunfights.",
-    hint: "Demo 1 — conceptual search via $match + $text on movies",
+    id: "vibes",
+    displayName: "Demo 1 · Vibes search",
+    steps: [
+      { label: "Load movies", prompt: "Load the embedded_movies collection." },
+      {
+        label: "Find by vibe",
+        prompt:
+          "Find me movies about lone cowboys, ruthless outlaws, and dusty gunfights.",
+      },
+      {
+        label: "Filter year >2000",
+        prompt: "Filter to movies after the year 2000.",
+      },
+      {
+        label: "Project fields",
+        prompt:
+          "Clean the result to only show the title, the year, the genres, and the plot.",
+      },
+    ],
   },
   {
-    label: "Join + branch",
-    prompt: "Find all comments by Ned Stark.",
-    hint: "Demo 2 — open with a filter, then ask for joins and branches",
+    id: "join",
+    displayName: "Demo 2 · Join + branch",
+    steps: [
+      {
+        label: "Find user comments",
+        prompt: "Find all comments by Ned Stark.",
+      },
+      { label: "Join movies", prompt: "Join the movie details to his comments." },
+      {
+        label: "Branch recent",
+        prompt:
+          "Create a branch: filter to movies after 2000, and show just the title and comment.",
+      },
+      {
+        label: "Branch by genre",
+        prompt:
+          "Create a second branch from the join: group by genre and count the reviews.",
+      },
+    ],
   },
   {
-    label: "BI analytics",
-    prompt: "Find all movies directed by Christopher Nolan.",
-    hint: "Demo 3 — open with a director match, then group / sort / round",
+    id: "bi",
+    displayName: "Demo 3 · BI analytics",
+    steps: [
+      {
+        label: "Filter director",
+        prompt: "Find all movies directed by Christopher Nolan.",
+      },
+      {
+        label: "Group by year",
+        prompt:
+          "Group his movies by release year. For each year, calculate his average IMDB rating and the total number of awards won.",
+      },
+      {
+        label: "Sort & round",
+        prompt:
+          "Sort the results chronologically by year, and round the average rating to one decimal place.",
+      },
+    ],
   },
 ];
+
+/** Find a demo + step index whose `prompt` matches the given text exactly
+ *  (case-insensitive trim). Returns `null` when the user wrote free-form
+ *  text that doesn't follow any demo. */
+function matchDemoStep(
+  text: string,
+): { demoId: DemoFlow["id"]; stepIndex: number } | null {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return null;
+  for (const demo of DEMO_FLOWS) {
+    for (let i = 0; i < demo.steps.length; i++) {
+      if (demo.steps[i].prompt.trim().toLowerCase() === normalized) {
+        return { demoId: demo.id, stepIndex: i };
+      }
+    }
+  }
+  return null;
+}
+
+/** First-step chips shown in the empty chat state — one opener per demo.
+ *  Uses the demo's long display name + a short hint string so the user
+ *  can see which demo they're starting before clicking. */
+const DEMO_OPENERS = DEMO_FLOWS.map((d) => ({
+  label: d.displayName,
+  prompt: d.steps[0].prompt,
+  hint: `${d.steps[0].label} — start the flow`,
+}));
 
 export function AgentChatPanel({
   entries,
@@ -105,12 +203,29 @@ export function AgentChatPanel({
   atlasConnected,
   atlasState,
   enableSuggestedPrompts,
+  autoSendSuggestion,
+  onAutoSendSuggestionChange,
   enableTextInput,
   voiceMode,
   voice,
 }: AgentChatPanelProps) {
   const [draft, setDraft] = useState("");
   const endRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Unified chip-click handler used by both the hardcoded demo openers and
+   * the agent-suggested follow-ups. Behavior depends on
+   * `autoSendSuggestion`: when on, dispatch immediately; when off (default)
+   * just fill the composer so the user reviews/edits before sending.
+   */
+  const handleChipClick = (prompt: string) => {
+    if (autoSendSuggestion && connected && !busy && prompt.trim()) {
+      onSendText(prompt);
+      setDraft("");
+    } else {
+      setDraft(prompt);
+    }
+  };
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -169,6 +284,67 @@ export function AgentChatPanel({
     }
     return null;
   }, [entries]);
+
+  /**
+   * Find the most-recent user message in the timeline. If its text
+   * matches step K of one of the hardcoded demos, return the demo + step
+   * — used below to surface step K+1 as a hardcoded chip alongside
+   * Gemini's suggestions.
+   */
+  const activeDemoStep = useMemo<
+    { demoId: DemoFlow["id"]; stepIndex: number } | null
+  >(() => {
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i];
+      if (e.kind === "user_text") return matchDemoStep(e.text);
+      if (
+        e.kind === "trace" &&
+        e.trace.kind === "user_text" &&
+        typeof e.trace.text === "string"
+      ) {
+        return matchDemoStep(e.trace.text);
+      }
+      if (e.kind === "user_audio") return null;
+    }
+    return null;
+  }, [entries]);
+
+  /**
+   * The chip set actually rendered post-turn. Composition: if the user is
+   * mid-demo and the next step exists, prepend that as the leading chip.
+   * Fill remaining slots from Gemini's suggestions, deduplicating against
+   * the hardcoded step's prompt. Cap at 3 total chips.
+   */
+  const combinedChips = useMemo<
+    Array<{ label: string; prompt: string; hint?: string }>
+  >(() => {
+    const out: Array<{ label: string; prompt: string; hint?: string }> = [];
+
+    if (activeDemoStep) {
+      const demo = DEMO_FLOWS.find((d) => d.id === activeDemoStep.demoId);
+      const next = demo?.steps[activeDemoStep.stepIndex + 1];
+      if (demo && next) {
+        // Use the step's short label (e.g. "Filter year >2000") so the
+        // hardcoded chip looks identical to Gemini-suggested chips — no
+        // "Demo 1 · next step" prefix. The user shouldn't care that this
+        // chip came from the script vs. from the model.
+        out.push({ label: next.label, prompt: next.prompt });
+      }
+    }
+
+    if (agentSuggestions) {
+      const seen = new Set(out.map((c) => c.prompt.trim().toLowerCase()));
+      for (const s of agentSuggestions) {
+        const key = s.prompt.trim().toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ label: s.label, prompt: s.prompt });
+        if (out.length >= 3) break;
+      }
+    }
+
+    return out;
+  }, [activeDemoStep, agentSuggestions]);
 
   const busyLabel = useMemo(() => {
     if (!busy) return null;
@@ -347,27 +523,14 @@ export function AgentChatPanel({
             )}
 
             {connected && atlasConnected && enableSuggestedPrompts && (
-              <div className="flex w-full flex-col gap-1.5">
-                {DEMO_PROMPTS.map((d) => (
-                  <button
-                    key={d.label}
-                    type="button"
-                    onClick={() => setDraft(d.prompt)}
-                    title={d.hint}
-                    className="group flex w-full flex-col gap-0.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition-colors hover:border-blue-300 hover:bg-blue-50"
-                  >
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-blue-600">
-                      {d.label}
-                    </span>
-                    <span className="text-xs text-slate-700">
-                      "{d.prompt}"
-                    </span>
-                    <span className="text-[10px] italic text-slate-400 group-hover:text-slate-500">
-                      {d.hint}
-                    </span>
-                  </button>
-                ))}
-              </div>
+              <ChipStrip
+                title="Pick a demo to start"
+                prompts={DEMO_OPENERS}
+                onPick={handleChipClick}
+                autoSendSuggestion={autoSendSuggestion}
+                onAutoSendSuggestionChange={onAutoSendSuggestionChange}
+                disabled={busy}
+              />
             )}
           </div>
         )}
@@ -379,32 +542,28 @@ export function AgentChatPanel({
               focusedToolEntryId={focusedToolEntryId}
             />
           ))}
-          {/* Agent-suggested follow-up chips. Render only when idle (so
-              users don't see stale chips mid-turn) AND when the user hasn't
-              opted out via Settings → Chat Panel → Suggest follow-ups.
-              They clear naturally because the next user message inserts a
-              `user_text` entry that the memo'd lookup terminates on. */}
-          {!busy && agentSuggestions && enableSuggestedPrompts && (
-            <div className="space-y-1.5 pt-1">
-              <div className="px-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                Suggested follow-ups
-              </div>
-              {agentSuggestions.map((s, i) => (
-                <button
-                  key={`${i}-${s.label}`}
-                  type="button"
-                  onClick={() => setDraft(s.prompt)}
-                  title={s.prompt}
-                  className="group flex w-full flex-col gap-0.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition-colors hover:border-blue-300 hover:bg-blue-50"
-                >
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-blue-600">
-                    {s.label}
-                  </span>
-                  <span className="text-xs text-slate-700">"{s.prompt}"</span>
-                </button>
-              ))}
-            </div>
-          )}
+          {/* Post-turn chip strip. The composition (see `combinedChips`
+              memo above) is: if the user's most recent message matched
+              step K of a demo, the FIRST chip is step K+1 of the same
+              demo; the remaining chips are taken from Gemini's
+              `suggest_next_prompts` reply, capped to 3 total. If no demo
+              is active, all chips come from Gemini. Hidden during `busy`
+              and during the empty state. */}
+          {!busy &&
+            enableSuggestedPrompts &&
+            entries.length > 0 &&
+            connected &&
+            atlasConnected &&
+            combinedChips.length > 0 && (
+              <ChipStrip
+                title="What's next?"
+                prompts={combinedChips}
+                onPick={handleChipClick}
+                autoSendSuggestion={autoSendSuggestion}
+                onAutoSendSuggestionChange={onAutoSendSuggestionChange}
+                disabled={busy}
+              />
+            )}
           {busy && busyLabel && (
             <div className="flex items-center gap-2.5 rounded-md border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-700">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -459,6 +618,76 @@ export function AgentChatPanel({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Reusable strip of suggestion chips. Renders the title, an optional
+ * "send immediately on click" checkbox, and a vertical list of chip
+ * buttons. Used for both the hardcoded demo openers and the Gemini-
+ * suggested follow-ups so the two render with identical chrome.
+ */
+function ChipStrip({
+  title,
+  prompts,
+  onPick,
+  autoSendSuggestion,
+  onAutoSendSuggestionChange,
+  disabled,
+  hideToggle,
+}: {
+  title: string;
+  prompts: Array<{ label: string; prompt: string; hint?: string }>;
+  onPick: (prompt: string) => void;
+  autoSendSuggestion: boolean;
+  onAutoSendSuggestionChange: (v: boolean) => void;
+  disabled?: boolean;
+  /** When true (e.g. on a secondary strip below the primary one), don't
+   *  re-render the auto-send checkbox — one toggle is enough. */
+  hideToggle?: boolean;
+}) {
+  if (prompts.length === 0) return null;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2 px-1">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+          {title}
+        </span>
+        {!hideToggle && (
+          <label className="flex cursor-pointer select-none items-center gap-1 text-[10px] text-slate-500">
+            <input
+              type="checkbox"
+              checked={autoSendSuggestion}
+              onChange={(e) => onAutoSendSuggestionChange(e.target.checked)}
+              className="h-3 w-3 cursor-pointer rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+            />
+            send immediately on click
+          </label>
+        )}
+      </div>
+      <div className="flex w-full flex-col gap-1.5">
+        {prompts.map((p, i) => (
+          <button
+            key={`${i}-${p.label}`}
+            type="button"
+            onClick={() => onPick(p.prompt)}
+            title={p.hint ?? p.prompt}
+            disabled={disabled}
+            className="group flex w-full flex-col gap-0.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition-colors hover:border-blue-300 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-blue-600">
+              {p.label}
+            </span>
+            <span className="text-xs text-slate-700">"{p.prompt}"</span>
+            {p.hint && (
+              <span className="text-[10px] italic text-slate-400 group-hover:text-slate-500">
+                {p.hint}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -622,19 +851,46 @@ const CUSTOM_TOOL_VERBS: Record<
   { starting: string; done: string; failed: string }
 > = {
   update_canvas: {
-    starting: "Updating canvas",
-    done: "Canvas updated",
-    failed: "Canvas update failed",
+    starting: "Updating the pipeline diagram",
+    done: "Pipeline diagram updated",
+    failed: "Pipeline diagram update failed",
   },
   push_results: {
-    starting: "Loading results into panel",
+    starting: "Loading results into the panel",
     done: "Results loaded",
-    failed: "Results push failed",
+    failed: "Couldn't push results",
+  },
+  run_pipeline: {
+    starting: "Running the pipeline against MongoDB",
+    done: "Pipeline run finished",
+    failed: "Pipeline run failed",
+  },
+  suggest_next_prompts: {
+    starting: "Preparing follow-up suggestions",
+    done: "Follow-up suggestions ready",
+    failed: "Couldn't prepare suggestions",
   },
 };
 
-/** Return a readable paraphrase for a custom UI tool, or null for MCP /
- *  unknown tools (caller should fall back to "Calling [toolName]"). */
+/** Names of the MongoDB MCP tools we expose through ADK's `MCPToolset`.
+ *  Mirrors the server-side `MCP_TOOLS_ALLOWLIST` in `agentLoop.ts`. Used
+ *  here to render a "Mongo MCP" badge next to the tool name so users can
+ *  tell at a glance whether a step touched the database. */
+const MCP_TOOL_NAMES = new Set([
+  "list-databases",
+  "list-collections",
+  "collection-schema",
+  "find",
+  "count",
+  "aggregate",
+]);
+
+function isMcpToolName(name: string): boolean {
+  return MCP_TOOL_NAMES.has(name);
+}
+
+/** Return a readable paraphrase for a custom tool, or null for MCP /
+ *  unknown tools (caller falls back to the tool name + MCP badge). */
 function paraphraseCustomTool(
   name: string,
   isStart: boolean,
@@ -647,8 +903,11 @@ function paraphraseCustomTool(
   return entry.done;
 }
 
-/** Compact one-line step — used for tool_call_start events. Renders either
- *  the paraphrase (custom tools) or "Calling [tool_name]…" (MCP tools). */
+/** Compact one-line step — used for tool_call_start events.
+ *  - Custom tool with a paraphrase: shows only natural-language text
+ *    ("Updating the pipeline diagram…"). The tool name is hidden.
+ *  - MCP tool: shows the raw tool name in monospace + a small "Mongo MCP"
+ *    badge so users see exactly what's being called against the database. */
 function StepLine({
   icon,
   toolName,
@@ -668,6 +927,7 @@ function StepLine({
 }) {
   const [open, setOpen] = useState(false);
   const hasPayload = payload !== undefined;
+  const isMcp = isMcpToolName(toolName);
   const toneClass =
     tone === "error"
       ? "border-rose-200 bg-rose-50 text-rose-800"
@@ -703,6 +963,7 @@ function StepLine({
             <span className="truncate font-semibold text-violet-700">
               {toolName}
             </span>
+            {isMcp && <McpBadge />}
             <span className="shrink-0 text-slate-400">…</span>
           </>
         )}
@@ -718,6 +979,19 @@ function StepLine({
         </div>
       )}
     </div>
+  );
+}
+
+/** Small purple pill rendered next to MCP-tool names so the user can see
+ *  at a glance which trace lines touched MongoDB through the MCP server. */
+function McpBadge() {
+  return (
+    <span
+      className="ml-1 shrink-0 rounded bg-violet-100 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-violet-700"
+      title="Tool exposed by the MongoDB MCP server"
+    >
+      Mongo MCP
+    </span>
   );
 }
 
@@ -773,6 +1047,7 @@ function ResultCard({
             <span className="truncate font-semibold text-violet-700">
               {toolName}
             </span>
+            {isMcpToolName(toolName) && <McpBadge />}
             {isError && <span className="shrink-0">failed</span>}
           </>
         )}

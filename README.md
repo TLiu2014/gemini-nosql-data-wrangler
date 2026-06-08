@@ -44,19 +44,33 @@ Each demo opener is one click away — when the chat panel is empty and you're c
 ## Quickstart (local dev)
 
 ```bash
-# Prereqs: Node 20+, an Atlas free M0 cluster with sample_mflix loaded,
-# and a Gemini API key from aistudio.google.com.
+# Prereqs: Node 20+, a Gemini API key from aistudio.google.com, and
+# EITHER an Atlas free M0 cluster with sample_mflix loaded OR Docker
+# (see "Local MongoDB" below for the recommended dev path).
 
 git clone https://github.com/TLiu2014/gemini-nosql-data-wrangler.git
 cd gemini-nosql-data-wrangler
 cp .env.example .env
-# Edit .env: MONGODB_URI=mongodb+srv://… and GEMINI_API_KEY=…
+# Edit .env: GEMINI_API_KEY=… and MONGODB_URI=… (Atlas or localhost)
 
 npm install
 npm run dev
 ```
 
 This boots the UI on `http://localhost:5173` (auto-opens `/app`) and the WebSocket server on `:8080`. The first WebSocket connect spawns the MongoDB MCP server (~3–5s cold start; subsequent sessions are near-instant).
+
+### Local MongoDB (recommended for development)
+
+Atlas free-tier M0 adds 200ms–2s of round-trip per query — over a 4-step demo, the wait adds up. For a near-instant local dev loop, run MongoDB in Docker with the same `sample_mflix` dataset Atlas's "Load Sample Data" provides:
+
+```bash
+docker-compose up -d                  # mongodb on :27017, sample_mflix auto-loaded
+docker-compose logs mongo-init -f     # ~30s on first run; idempotent thereafter
+```
+
+Then set `MONGODB_URI=mongodb://localhost:27017/` in `.env`. The UI's Settings → MongoDB Atlas Connection String still overrides this per-session, so you can A/B against Atlas without restarting the server.
+
+Full walkthrough (including index verification, port-conflict troubleshooting, and the `$vectorSearch` caveat): **[LOCAL_DEV.md](./LOCAL_DEV.md)**.
 
 For Cloud Run deployment, see **[deployment.md](./deployment.md)**. For an in-app reference of the agent's tool surface (custom tools + MCP tools + WebSocket events with example calls), open **`/docs`** in the running app.
 

@@ -73,7 +73,7 @@ export default function DocsPage() {
     <div className={`min-h-screen w-full ${t.page}`}>
       {/* Top nav — matches the landing page header exactly so the two
           routes read as one site. */}
-      <header className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
+      <header className="mx-auto flex max-w-screen-2xl items-center justify-between px-6 py-5">
         <Link to="/" className="flex items-center gap-2">
           <Sparkles className="h-5 w-5 text-violet-400" />
           <span className="text-sm font-semibold tracking-tight">
@@ -106,7 +106,7 @@ export default function DocsPage() {
       </header>
 
       {/* Hero */}
-      <section className="relative mx-auto max-w-6xl px-6 pb-14 pt-10">
+      <section className="relative mx-auto max-w-screen-2xl px-6 pb-14 pt-10">
         <div
           aria-hidden
           className={`pointer-events-none absolute inset-0 -z-0 blur-3xl ${t.heroGradient}`}
@@ -144,7 +144,7 @@ export default function DocsPage() {
       </section>
 
       {/* Architecture mini-overview */}
-      <section id="architecture" className="mx-auto max-w-6xl px-6 pb-16 scroll-mt-20">
+      <section id="architecture" className="mx-auto max-w-screen-2xl px-6 pb-16 scroll-mt-20">
         <div
           className={`text-xs font-semibold uppercase tracking-wider ${t.eyebrow}`}
         >
@@ -183,7 +183,7 @@ export default function DocsPage() {
           right. The TOC mirrors the section anchor ids — clicks scroll to
           the matching `id`. On mobile the sidebar is hidden and the page
           flows top-to-bottom. */}
-      <div className="mx-auto max-w-6xl px-6">
+      <div className="mx-auto max-w-screen-2xl px-6">
         <div className="grid grid-cols-1 gap-8 lg:grid-cols-[220px_minmax(0,1fr)]">
           <aside className="hidden lg:block">
             <nav
@@ -799,7 +799,7 @@ export default function DocsPage() {
       </div>
 
       {/* Footer CTA — full-width, outside the two-column grid. */}
-      <section className="mx-auto max-w-6xl px-6 pb-24">
+      <section className="mx-auto max-w-screen-2xl px-6 pb-24">
         <div className={`rounded-xl border px-8 py-10 text-center ${t.footerBox}`}>
           <h3 className="text-2xl font-bold tracking-tight sm:text-3xl">
             Try it live.
@@ -819,7 +819,7 @@ export default function DocsPage() {
       </section>
 
       <footer
-        className={`mx-auto max-w-6xl px-6 pb-10 text-center text-xs ${t.footerText}`}
+        className={`mx-auto max-w-screen-2xl px-6 pb-10 text-center text-xs ${t.footerText}`}
       >
         Built by Tianwei Liu for the Google Cloud Rapid Agent Hackathon, 2026. Open source.
       </footer>

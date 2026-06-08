@@ -9,9 +9,16 @@
  * The strip is intentionally regex-based, not JSON-parse-based: MCP
  * responses are a mix of free-form prose and embedded JSON, and we want
  * to survive both.
+ *
+ * Budget note: Gemini 3 Flash's tool-response payload limits are large
+ * enough that 32 KB was overly conservative — it caused `$facet` results
+ * (5 stages × 20 docs × ~600 bytes each ≈ 60 KB) to get truncated, which
+ * invalidated the JSON and left every result tab empty. 256 KB is well
+ * within Gemini's actual limits and large enough for any realistic facet
+ * preview at the default `preview_limit = 20`.
  */
 
-const DEFAULT_BYTE_BUDGET = 32 * 1024;
+const DEFAULT_BYTE_BUDGET = 256 * 1024;
 
 const HEAVY_FIELD_NAMES = [
   "plot_embedding",
@@ -69,7 +76,10 @@ export function extractDocsFromMcpAggregate(raw: unknown): unknown[] {
   for (const entry of r.content) {
     if (entry?.type !== "text" || typeof entry.text !== "string") continue;
     const text = entry.text.trim();
-    if (!text || (text[0] !== "{" && text[0] !== "[")) continue;
+    if (!text) continue;
+    if (text[0] !== "{" && text[0] !== "[") continue;
+
+    // Fast path: the fragment is well-formed JSON.
     try {
       const parsed = JSON.parse(text);
       if (Array.isArray(parsed)) {
@@ -77,9 +87,67 @@ export function extractDocsFromMcpAggregate(raw: unknown): unknown[] {
       } else if (parsed && typeof parsed === "object") {
         docs.push(parsed);
       }
+      continue;
     } catch {
-      /* fragment isn't valid JSON — skip */
+      /* fall through to recovery */
+    }
+
+    // Recovery path: the fragment got truncated (byte budget hit, or the
+    // MCP server emitted a partial doc). Walk forward from each `{` and
+    // try parsing increasing substrings; any prefix that JSON-parses as
+    // a valid object contributes its docs. Cheap heuristic — we only
+    // attempt this when the whole-string parse fails.
+    for (const slice of recoverJsonObjects(text)) {
+      docs.push(slice);
     }
   }
   return docs;
+}
+
+/** Walk a possibly-truncated text and extract any well-formed top-level
+ *  JSON objects. Bails after the first malformed run (no point burning
+ *  CPU on garbage). */
+function recoverJsonObjects(text: string): unknown[] {
+  const out: unknown[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escape = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (ch === "\\") escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth++;
+      continue;
+    }
+    if (ch === "}") {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        const candidate = text.slice(start, i + 1);
+        try {
+          const parsed = JSON.parse(candidate);
+          if (parsed && typeof parsed === "object") out.push(parsed);
+        } catch {
+          /* truncated tail — stop scanning, we won't find another valid object after this */
+          return out;
+        }
+        start = -1;
+      }
+      continue;
+    }
+  }
+  return out;
 }

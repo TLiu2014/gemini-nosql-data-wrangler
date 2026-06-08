@@ -20,9 +20,16 @@ import { buildSystemInstruction } from "./systemInstruction.js";
 /**
  * Allow-list of MongoDB MCP tools we expose to the agent through ADK's
  * {@link MCPToolset}. The MCP server publishes ~16+ tools, including Atlas
- * admin operations we don't want in the agent's vocabulary. The same list
- * lives in `mongoClient.ts` for the legacy direct path; keep the two in
- * sync if you add/remove tools.
+ * admin operations we don't want in the agent's vocabulary.
+ *
+ * NOTE: `aggregate` is intentionally NOT in this list. The agent's only
+ * path to executing a pipeline is our custom `run_pipeline` tool, which
+ * wraps the underlying MongoDB call in `$facet` and dispatches per-stage
+ * `push_results` events to populate the UI. Exposing `aggregate` directly
+ * lets the model pick the simpler tool and skip the result-dispatch
+ * machinery — every results tab ends up blank. The legacy `MongoMcpClient`
+ * (used inside `run_pipeline`'s server-side `$facet`) still has access to
+ * aggregate; the agent does not.
  */
 const MCP_TOOLS_ALLOWLIST = [
   "list-databases",
@@ -30,7 +37,6 @@ const MCP_TOOLS_ALLOWLIST = [
   "collection-schema",
   "find",
   "count",
-  "aggregate",
 ];
 
 const APP_NAME = "gemini-nosql-data-wrangler";
@@ -165,6 +171,16 @@ export class AgentLoop {
         stack.push(startedAt);
         this.toolStartStack.set(tool.name, stack);
 
+        const argsPreview = (() => {
+          try {
+            const s = JSON.stringify(args);
+            return s.length > 160 ? s.slice(0, 160) + "…" : s;
+          } catch {
+            return "<unserializable>";
+          }
+        })();
+        console.log(`[agent] → ${tool.name} args=${argsPreview}`);
+
         this.opts.client.sendTrace({
           kind: "tool_call_start",
           label: tool.name,
@@ -190,6 +206,12 @@ export class AgentLoop {
         const isError =
           this.responseLooksLikeError(payload) ||
           this.responseLooksLikeError(response);
+
+        console.log(
+          `[agent] ← ${tool.name} ${isError ? "ERROR" : "ok"}${
+            durationMs != null ? ` in ${durationMs}ms` : ""
+          }`,
+        );
 
         this.opts.client.sendTrace({
           kind: "tool_call_result",
@@ -395,6 +417,11 @@ export class AgentLoop {
       this.opts.client.sendResults({ stageId, rows });
       previewed.push({ stageId, rows: rows.length });
     }
+    console.log(
+      `[agent] run_pipeline (${executionMode}) on ${database}.${collection}: ${previewed
+        .map((p) => `${p.stageId}=${p.rows}`)
+        .join(", ")}`,
+    );
 
     const finalRows = perStageRows.get(stageIds[stageIds.length - 1]) ?? [];
     const SUMMARY_ROW_CAP = 5;
@@ -418,26 +445,21 @@ export class AgentLoop {
     if (!this.opts.mcp.isConnected()) {
       return { ok: false, errorMessage: "MongoDB MCP not connected" };
     }
-    let raw: unknown;
-    try {
-      raw = await this.opts.mcp.callTool("aggregate", {
-        database,
-        collection,
-        pipeline: facetPipeline,
-      });
-    } catch (err) {
-      return { ok: false, errorMessage: String(err) };
-    }
-    const cleaned = stripHeavyFieldsFromMcpResult(raw);
-    if ((cleaned as { isError?: boolean })?.isError) {
-      const text = JSON.stringify(cleaned).slice(0, 200);
-      return { ok: false, errorMessage: `MCP isError: ${text}` };
-    }
-    const docs = extractFirstFacetDoc(cleaned);
-    if (!docs) {
-      return { ok: false, errorMessage: "no doc returned from $facet" };
-    }
-    return { ok: true, facetDoc: docs };
+    return await this.callMcpWithTrace<{
+      ok: true;
+      facetDoc: Record<string, unknown>;
+    } | { ok: false; errorMessage: string }>(
+      "aggregate",
+      { database, collection, pipeline: facetPipeline },
+      (cleaned) => {
+        const docs = extractFirstFacetDoc(cleaned);
+        if (!docs) {
+          return { ok: false, errorMessage: "no doc returned from $facet" };
+        }
+        return { ok: true, facetDoc: docs };
+      },
+      (errorMessage) => ({ ok: false, errorMessage }),
+    );
   }
 
   private async runSequentialPrefixAggregates(
@@ -451,29 +473,63 @@ export class AgentLoop {
     const promises = stageIds.map(async (stageId, i) => {
       const prefix = pipeline.slice(0, i);
       const prefixPipeline = [...prefix, { $limit: previewLimit }];
-      try {
-        const raw = await this.opts.mcp.callTool("aggregate", {
-          database,
-          collection,
-          pipeline: prefixPipeline,
-        });
-        const cleaned = stripHeavyFieldsFromMcpResult(raw);
-        if ((cleaned as { isError?: boolean })?.isError) {
-          out.set(stageId, []);
-          return;
-        }
-        const docs = extractAggregateDocs(cleaned);
-        out.set(stageId, docs);
-      } catch (err) {
-        console.warn(
-          `[agent] fallback prefix aggregate for ${stageId} (idx ${i}) threw:`,
-          err,
-        );
-        out.set(stageId, []);
-      }
+      const rows = await this.callMcpWithTrace<unknown[]>(
+        "aggregate",
+        { database, collection, pipeline: prefixPipeline },
+        (cleaned) => extractAggregateDocs(cleaned),
+        () => [],
+      );
+      out.set(stageId, rows);
     });
     await Promise.all(promises);
     return out;
+  }
+
+  /**
+   * Internal wrapper around `mcp.callTool`. Does NOT emit trace events —
+   * the call happens inside `run_pipeline`'s server-side implementation,
+   * which is itself the user-visible tool. Emitting a synthetic
+   * `tool_call_start("aggregate")` here just made the trace timeline
+   * noisier without adding information the user could act on.
+   *
+   * Server-side `console.log`s still record the call for debugging.
+   *
+   * `parseOk` runs against the stripped MCP response on success.
+   * `parseFail` runs with an error message on failure (timeout, MCP
+   * error, etc.). Both produce the function's typed return value.
+   */
+  private async callMcpWithTrace<T>(
+    mcpToolName: string,
+    args: Record<string, unknown>,
+    parseOk: (cleaned: unknown) => T,
+    parseFail: (errorMessage: string) => T,
+  ): Promise<T> {
+    const startedAt = Date.now();
+    console.log(`[agent] (internal) → ${mcpToolName}`);
+
+    let raw: unknown;
+    try {
+      raw = await this.opts.mcp.callTool(mcpToolName, args);
+    } catch (err) {
+      const message = String(err);
+      console.warn(
+        `[agent] (internal) ← ${mcpToolName} threw in ${Date.now() - startedAt}ms: ${message}`,
+      );
+      return parseFail(message);
+    }
+
+    const durationMs = Date.now() - startedAt;
+    const cleaned = stripHeavyFieldsFromMcpResult(raw);
+    const isErr = !!(cleaned as { isError?: boolean })?.isError;
+    console.log(
+      `[agent] (internal) ← ${mcpToolName} ${isErr ? "ERROR" : "ok"} in ${durationMs}ms`,
+    );
+
+    if (isErr) {
+      const text = JSON.stringify(cleaned).slice(0, 200);
+      return parseFail(`MCP isError: ${text}`);
+    }
+    return parseOk(cleaned);
   }
 
   /** Build the StdioConnectionParams ADK's MCPToolset needs to spawn a

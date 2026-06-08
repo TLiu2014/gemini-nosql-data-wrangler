@@ -6,7 +6,33 @@
  * Down the road this is the single point we'd swap in Google Secret Manager
  * loading — values still surface as `env.MONGODB_URI` etc., callers don't change.
  */
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
 import { DEFAULT_GEMINI_MODEL } from "../agent/models.js";
+
+/**
+ * Load the repo-root `.env` into `process.env` for local dev. This is a
+ * no-op in production (Cloud Run injects real env vars / Secret Manager and
+ * there is no `.env` file shipped). Real environment variables always win —
+ * `loadEnvFile` does not overwrite values already present in `process.env`.
+ *
+ * The file lives at the repo root, three levels up from this module both in
+ * source (`server/src/config/env.ts`) and compiled output
+ * (`server/dist/config/env.js`).
+ */
+function loadDotEnv(): void {
+  if (typeof process.loadEnvFile !== "function") return;
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const envPath = path.resolve(here, "../../../.env");
+  try {
+    process.loadEnvFile(envPath);
+  } catch {
+    /* No .env file (e.g. production / CI) — rely on real env vars. */
+  }
+}
+
+loadDotEnv();
 
 interface Env {
   /**

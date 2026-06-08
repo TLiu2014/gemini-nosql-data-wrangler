@@ -41,6 +41,12 @@ export interface Settings {
    */
   enableSuggestedPrompts: boolean;
   /**
+   * Auto-send when the user clicks a suggestion chip. When off (default)
+   * clicking fills the composer and the user reviews/edits before pressing
+   * Send. When on, the chip's `prompt` is dispatched immediately.
+   */
+  autoSendSuggestion: boolean;
+  /**
    * Show voice/audio features (mic, visualizer, mute button, transcript
    * status row, transcription pipeline). When off, the agent is purely
    * text-driven and the sidebar's audio chrome is hidden.
@@ -86,6 +92,7 @@ const DEFAULT_SETTINGS: Settings = {
   showResultsJsonPane: false,
   enableTextInput: true,
   enableSuggestedPrompts: true,
+  autoSendSuggestion: false,
   enableVoiceMode: false,
   languageMode: "english",
   layoutMode: "side-by-side",

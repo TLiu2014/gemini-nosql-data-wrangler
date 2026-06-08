@@ -18,7 +18,15 @@ const env = loadEnv();
 
 const app = express();
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", model: env.GEMINI_MODEL });
+  res.json({
+    status: "ok",
+    model: env.GEMINI_MODEL,
+    // Whether the server has these configured via env (.env / Secret Manager).
+    // The UI uses these to decide if a missing Settings value can fall back to
+    // a server-side default rather than blocking the Connect attempt outright.
+    geminiKeyConfigured: !!env.GEMINI_API_KEY,
+    mongoUriConfigured: !!env.MONGODB_URI,
+  });
 });
 
 const httpServer = http.createServer(app);

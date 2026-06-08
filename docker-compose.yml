@@ -1,0 +1,59 @@
+# Local MongoDB for development. Skip Atlas free-tier latency and run the
+# demos against a `mongod` on localhost. The `mongo-init` one-shot
+# service downloads + restores the `sample_mflix` dataset on first boot;
+# the volume persists across restarts so it only happens once.
+#
+# Image references are fully qualified as `docker.io/library/mongo:7`
+# rather than the shorter `mongo:7`. The fully-qualified form explicitly
+# targets the public Docker Hub registry; the short form resolves through
+# the local Docker daemon's default registry config, which may point
+# elsewhere depending on how Docker was installed.
+#
+# Quickstart:
+#   docker-compose up -d
+#   wait ~30s for init to finish (`docker-compose logs mongo-init -f`)
+#   set MONGODB_URI=mongodb://localhost:27017/ in your .env
+#
+# Settings → MongoDB Atlas Connection String (UI) still overrides this if
+# the user pastes their own Atlas URI — local just becomes the default
+# when neither the UI nor the server env has anything else configured.
+#
+# See LOCAL_DEV.md for the full walkthrough.
+
+services:
+  mongodb:
+    image: docker.io/library/mongo:7
+    container_name: gemini-wrangler-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - "db.adminCommand('ping')"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # One-shot init container: downloads `sample_mflix` from MongoDB's
+  # official S3 mirror and restores it into the running mongodb service.
+  # No-op when the dataset already exists, so it's safe to run again.
+  mongo-init:
+    image: docker.io/library/mongo:7
+    container_name: gemini-wrangler-mongo-init
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    volumes:
+      - ./scripts/local-mongo-init.sh:/init.sh:ro
+    entrypoint: ["sh", "/init.sh"]
+    restart: "no"
+
+volumes:
+  mongo-data:

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { Check, Download, Share2 } from "lucide-react";
+import { Check, Download, Image as ImageIcon, Loader2, Share2 } from "lucide-react";
 import { TransformationFlow } from "@/components/flow/TransformationFlow";
 import TopBar from "@/components/voice/TopBar";
 import {
@@ -315,6 +315,12 @@ export default function Workspace() {
   // Transient confirmation surfaced in the sidebar after the user clicks Save
   // in Settings. Auto-clears after 6s so it doesn't linger.
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
+  // Whether the SERVER has MONGODB_URI / GEMINI_API_KEY configured via env
+  // (.env / Secret Manager). Fetched from /health on mount. When a value is
+  // missing from Settings, we fall back to these before blocking the connect
+  // attempt — mirrors the server's resolveApiKey/resolveMongoUri fallback.
+  const [serverHasApiKey, setServerHasApiKey] = useState(false);
+  const [serverHasMongoUri, setServerHasMongoUri] = useState(false);
   const saveNoticeTimerRef = useRef<number | null>(null);
   const flashSaveNotice = useCallback((message: string) => {
     setSaveNotice(message);
@@ -487,24 +493,66 @@ export default function Workspace() {
     ws.connect();
   }, [ws]);
 
+  // Probe the server for env-configured credentials so a missing Settings
+  // value can fall back to the server's .env defaults instead of blocking.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/health");
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          geminiKeyConfigured?: boolean;
+          mongoUriConfigured?: boolean;
+        };
+        if (cancelled) return;
+        setServerHasApiKey(!!data.geminiKeyConfigured);
+        setServerHasMongoUri(!!data.mongoUriConfigured);
+      } catch {
+        /* health endpoint unreachable — leave both false (block as before) */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   /**
-   * Connect wrapper that warns the user when they have no API key or no
-   * MongoDB URI set in Settings. We don't block — the server may have
-   * `GEMINI_API_KEY` / `MONGODB_URI` env vars configured, in which case
-   * the connect still succeeds — but a heads-up in the header chip saves
-   * users from staring at a stuck "Connecting…" without knowing why.
+   * Connect wrapper with credential checks. A value counts as "available" if
+   * it's set in Settings OR the server has it configured via env (.env /
+   * Secret Manager — surfaced through /health). This mirrors the server's
+   * resolveApiKey/resolveMongoUri fallback so local dev with a populated
+   * .env can connect without re-pasting credentials into Settings.
+   *   - No Gemini key anywhere → BLOCK: never even open the WebSocket.
+   *     Without a Gemini key there's literally nothing the agent can do, and
+   *     opening the WS just to fail looks like the Connect button broke.
+   *     Flash a warning and stay disconnected so the button stays "Connect".
+   *   - No MongoDB URI anywhere → ALLOW but warn: the app supports
+   *     canvas-only mode (no database, agent still works for design). Heads-up.
    */
   const handleConnectAttempt = useCallback(() => {
-    const missing: string[] = [];
-    if (!settings.apiKey.trim()) missing.push("Gemini API key");
-    if (!settings.mongoUri.trim()) missing.push("MongoDB connection string");
-    if (missing.length > 0) {
+    const hasApiKey = !!settings.apiKey.trim() || serverHasApiKey;
+    const hasMongoUri = !!settings.mongoUri.trim() || serverHasMongoUri;
+    if (!hasApiKey) {
       flashSaveNotice(
-        `⚠ ${missing.join(" + ")} not set in Settings — connection will fail unless the server has a fallback configured.`,
+        "⚠ No Gemini API key in Settings — open Settings → Connection and paste your AI Studio key, then click Connect.",
+      );
+      return;
+    }
+    if (!hasMongoUri) {
+      flashSaveNotice(
+        "⚠ No MongoDB URI in Settings — connecting in canvas-only mode. Agent can design pipelines but can't run queries.",
       );
     }
     ws.connect();
-  }, [settings.apiKey, settings.mongoUri, ws, flashSaveNotice]);
+  }, [
+    settings.apiKey,
+    settings.mongoUri,
+    serverHasApiKey,
+    serverHasMongoUri,
+    ws,
+    flashSaveNotice,
+  ]);
 
   const handleDisconnect = useCallback(() => {
     ws.disconnect();
@@ -759,30 +807,50 @@ export default function Workspace() {
     seenResultStageIdsRef.current.clear();
   }, [settings.sampleFlow]);
 
-  // Mirror the canvas state into the URL fragment so users can copy-paste
-  // the page URL to share a pipeline. Debounced to ~400 ms so the rapid
-  // `update_canvas` calls an agent makes mid-turn don't burn the browser's
-  // history API or thrash the address bar. Fragments never leave the
-  // client (browsers don't send the hash to the server), so there's no BE
-  // dependency or privacy concern.
-  const lastWrittenFragment = useRef<string>("");
+  // URL-fragment behavior:
+  //   - On initial mount: `initialSchema` already consumed the hash (if any)
+  //     to seed the canvas. We clear the hash here so refresh-after-edit
+  //     returns to a clean canvas — users expect that, not "the last thing
+  //     I had open" persistence.
+  //   - On schema change: we DO NOT auto-write. That used to persist every
+  //     mid-turn agent canvas update into the URL bar, which made simple
+  //     refreshes resurrect stale diagrams and confused users.
+  //   - On Share click: handleShareCanvas explicitly encodes the current
+  //     schema into the hash, copies the URL, then leaves the hash in
+  //     place so the user can paste their share link.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const timer = window.setTimeout(() => {
-      const desired = schema ? encodeSchemaToFragment(schema) : "";
-      if (desired === lastWrittenFragment.current) return;
-      lastWrittenFragment.current = desired;
-      // Use replaceState — we don't want every canvas edit to add a back-
-      // button entry.
-      const target = `${window.location.pathname}${window.location.search}${desired}`;
-      window.history.replaceState(null, "", target);
-    }, 400);
-    return () => window.clearTimeout(timer);
-  }, [schema]);
+    if (!window.location.hash) return;
+    // RAF so we run after the initial paint — avoids racing the History
+    // API with React's mount effects.
+    requestAnimationFrame(() => {
+      try {
+        window.history.replaceState(
+          null,
+          "",
+          `${window.location.pathname}${window.location.search}`,
+        );
+      } catch {
+        /* History API unavailable — ignore. */
+      }
+    });
+    // Intentionally `[]` — run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleShareCanvas = useCallback(async () => {
     if (!schema) return;
     try {
+      const fragment = encodeSchemaToFragment(schema);
+      // Write the fragment into the address bar so `window.location.href`
+      // captures it for the clipboard copy below. We deliberately don't
+      // keep a live `useEffect` mirroring schema → hash; the share button
+      // is the only path that touches the URL.
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${window.location.search}${fragment}`,
+      );
       const url = window.location.href;
       await navigator.clipboard.writeText(url);
       setShareCopied(true);
@@ -798,6 +866,48 @@ export default function Workspace() {
     const name = schema.pipeline?.name || "pipeline";
     downloadMqlScript(name, body);
   }, [schema]);
+
+  /**
+   * Snapshot the canvas as a PNG download. Uses `html-to-image`'s `toPng`
+   * against the `.react-flow` element — captures the diagram (nodes,
+   * edges, background grid) and excludes the floating Share/Export
+   * toolbar (it's a sibling, not a child) plus React Flow's own controls
+   * + minimap (filtered out via `filter` so the screenshot is just the
+   * diagram). Saved as `<pipeline-name>.png`.
+   */
+  const [imageExportPending, setImageExportPending] = useState(false);
+  const handleExportImage = useCallback(async () => {
+    if (!schema || imageExportPending) return;
+    const target = document.querySelector<HTMLElement>(".react-flow");
+    if (!target) return;
+    setImageExportPending(true);
+    try {
+      const { toPng } = await import("html-to-image");
+      const dataUrl = await toPng(target, {
+        backgroundColor: "#ffffff",
+        pixelRatio: 2,
+        cacheBust: true,
+        filter: (node) => {
+          if (!(node instanceof HTMLElement)) return true;
+          // Skip React Flow's chrome — keep just the diagram itself.
+          if (node.classList.contains("react-flow__controls")) return false;
+          if (node.classList.contains("react-flow__minimap")) return false;
+          if (node.classList.contains("react-flow__attribution")) return false;
+          return true;
+        },
+      });
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = `${schema.pipeline?.name || "pipeline"}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (err) {
+      console.warn("[workspace] export image failed:", err);
+    } finally {
+      setImageExportPending(false);
+    }
+  }, [schema, imageExportPending]);
 
   // Connection state surfaced to the TopBar. The sidebar no longer hosts
   // a StatusBar — Atlas/Gemini status pills + the Connect button live in
@@ -843,6 +953,10 @@ export default function Workspace() {
               atlasConnected={atlasConnection === "connected"}
               atlasState={atlasConnection}
               enableSuggestedPrompts={settings.enableSuggestedPrompts}
+              autoSendSuggestion={settings.autoSendSuggestion}
+              onAutoSendSuggestionChange={(v) =>
+                updateSetting("autoSendSuggestion", v)
+              }
               enableTextInput={settings.enableTextInput}
               voiceMode={voiceMode}
               voice={{
@@ -909,6 +1023,20 @@ export default function Workspace() {
                         Share canvas
                       </>
                     )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportImage}
+                    disabled={imageExportPending}
+                    title="Download the current diagram as a PNG image."
+                    className="pointer-events-auto inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-200 bg-white/95 px-2.5 text-xs font-medium text-slate-700 shadow-md backdrop-blur hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {imageExportPending ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <ImageIcon className="h-3.5 w-3.5" />
+                    )}
+                    Export PNG
                   </button>
                   <button
                     type="button"

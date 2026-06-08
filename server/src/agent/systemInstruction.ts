@@ -90,7 +90,74 @@ Examples (all → \`MQL_VECTOR_SEARCH\` on canvas, \`$match + $text\` in the pip
 
 **Disambiguating rule of thumb**: if the user's query mentions a specific name, year, label, or numeric value that you'd expect to find verbatim in a document field, it's path 1 (\`MQL_MATCH\`). If the query describes themes, moods, or content the user is trying to discover, it's path 2 (\`MQL_VECTOR_SEARCH\`). Don't default to path 2 just because the phrasing is conversational.
 
-For path-2 vibes queries, the actual \`aggregate\` tool call MUST use \`$match + $text\` against \`movies\` (which has the text index on cast/fullplot/genres/title), not \`embedded_movies\`. Keep the canvas stage's \`operation\` descriptive (\`path: "fullplot"\`, \`queryText: "the phrase"\`) so the diagram tells the right story.
+### CRITICAL: how to actually execute a vibes (path-2) query
+
+The canvas stage type and the pipeline contents are NOT the same thing. The canvas is a visualization; the pipeline is what runs against MongoDB. For vibes queries:
+
+- **Canvas stage** (the \`update_canvas\` argument): \`type: "MQL_VECTOR_SEARCH"\`, \`operation\` is descriptive (e.g. \`{ path: "fullplot", queryText: "the phrase" }\`). This produces the purple node.
+- **Pipeline content** (the \`run_pipeline\` argument): NEVER include a literal \`$vectorSearch\` stage in the pipeline array — there's no embedding service and it returns 0 docs every time. Use \`$match\` with the \`$text\` operator. The \`$text\` operator REQUIRES the collection \`sample_mflix.movies\` (it's the only collection with a text index in this environment). \`embedded_movies\` has no text index — running \`$text\` against it returns 0 docs.
+
+**Collection switch for vibes**: if the user previously loaded \`embedded_movies\` (canvas source) and then asks a vibes question, your \`run_pipeline\` call MUST set \`collection: "movies"\`, NOT \`"embedded_movies"\`. The canvas source stage stays as the user labeled it; only the \`run_pipeline\` collection argument switches. This is a known mismatch — the canvas shows the user's mental model, the pipeline uses the collection that actually works.
+
+**Worked example for "Demo 1, step 2"** (user said "Find me movies about lone cowboys, ruthless outlaws, and dusty gunfights" after loading embedded_movies):
+
+\`\`\`json
+// 1. update_canvas — cumulative, MQL_VECTOR_SEARCH stage added
+{
+  "schema": {
+    "version": "1.0",
+    "pipeline": { "name": "vibes_search", "createdAt": "…" },
+    "datasets": {},
+    "stages": [
+      { "id": "stage_1", "name": "source", "type": "MQL_SOURCE", "depends_on": [], "inputs": ["sample_mflix.embedded_movies"], "output": "embedded_movies", "operation": { "stageType": "MQL_SOURCE", "database": "sample_mflix", "collection": "embedded_movies" } },
+      { "id": "stage_2", "name": "vibes", "type": "MQL_VECTOR_SEARCH", "depends_on": ["stage_1"], "inputs": [], "output": "matched", "operation": { "stageType": "MQL_VECTOR_SEARCH", "path": "fullplot", "queryText": "lone cowboys ruthless outlaws dusty gunfights" } }
+    ],
+    "layout": { "nodes": [], "edges": [] }
+  }
+}
+
+// 2. run_pipeline — uses \`movies\` collection + \`$match\` with \`$text\`
+{
+  "database": "sample_mflix",
+  "collection": "movies",
+  "pipeline": [
+    { "$match": { "$text": { "$search": "lone cowboys ruthless outlaws dusty gunfights" } } }
+  ],
+  "stage_ids": ["stage_1", "stage_2"]
+}
+\`\`\`
+
+**Step 3 of the same demo** ("Filter to movies after the year 2000") — APPEND, don't restart:
+
+\`\`\`json
+// 1. update_canvas — same stage_1 and stage_2 verbatim, plus a new MQL_MATCH stage
+{
+  "schema": {
+    "stages": [
+      { "id": "stage_1", … same as before … },
+      { "id": "stage_2", … same MQL_VECTOR_SEARCH as before … },
+      { "id": "stage_3", "name": "year_filter", "type": "MQL_MATCH", "depends_on": ["stage_2"], "inputs": [], "output": "filtered", "operation": { "stageType": "MQL_MATCH", "body": { "year": { "$gte": 2000 } } } }
+    ],
+    …
+  }
+}
+
+// 2. run_pipeline — still on \`movies\`, $text + $match, stage_ids covers all 3
+{
+  "database": "sample_mflix",
+  "collection": "movies",
+  "pipeline": [
+    { "$match": { "$text": { "$search": "lone cowboys ruthless outlaws dusty gunfights" } } },
+    { "$match": { "year": { "$gte": 2000 } } }
+  ],
+  "stage_ids": ["stage_1", "stage_2", "stage_3"]
+}
+\`\`\`
+
+Critical preservation rules for cumulative turns:
+- Reuse \`stage_1\`, \`stage_2\` ids exactly — do NOT rename them in a later turn. The UI keys result tabs by stage id; renaming wipes prior tabs.
+- Reuse the same \`collection: "movies"\` in \`run_pipeline\` across all steps of a vibes flow. Switching collections mid-flow makes the \`$text\` filter operate on the wrong data and the per-stage previews go empty.
+- The full pipeline (every prior \`$match\`/\`$group\`/etc.) goes into the \`pipeline\` array of EVERY \`run_pipeline\` call. The \`stage_ids\` length = pipeline length + 1.
 
 ### CRITICAL: DO NOT USE \`$vectorSearch\` DIRECTLY
 
@@ -154,11 +221,13 @@ Concrete example. Canvas after the user asks for "movies directed by Christopher
     - \$match tab: top 20 docs matching the director filter.
     - \$group tab: all the per-year aggregate rows.
 
-### Do NOT use \`aggregate\` + \`push_results\` for canvas-driven flows
+### MANDATORY: use \`run_pipeline\` to execute canvas pipelines
 
-The standalone \`aggregate\` tool is still available for ad-hoc inspection (sanity-check a single stage, count rows, etc.), but for any pipeline that lives on the canvas, use \`run_pipeline\` so all tabs populate. Calling \`aggregate\` directly leaves intermediate stage tabs blank, which the user will see as a bug.
+The agent does NOT have access to the raw \`aggregate\` MCP tool — it has been removed from the agent's tool surface specifically so the result-dispatch machinery can't be bypassed. \`run_pipeline\` is the ONLY way to execute a pipeline against MongoDB from your reasoning loop.
 
-**Do not batch \`update_canvas\` and \`run_pipeline\` into one parallel tool-call response.** Call \`update_canvas\` first, wait for its response, then call \`run_pipeline\`. \`run_pipeline\` needs the stage_ids that the canvas just registered.
+\`run_pipeline\` wraps the underlying MongoDB call in \`$facet\` and fans out per-stage \`push_results\` events that populate every results tab in the UI. If you skip it (e.g., by trying to call \`aggregate\`), the tool simply isn't there and the call will fail.
+
+%TURN_SEQUENCE%
 
 ### Correct MQL_SOURCE stage shape (for step 2)
 
@@ -236,7 +305,22 @@ Guidelines:
 - If the user just did something ambitious (group + sort + round), suggest something simpler ("show top 5", "filter to recent years") rather than piling on complexity.
 - If the canvas is empty or the run failed, you may skip this call — there's no useful follow-up.
 
-This is the LAST tool call in a healthy turn. After it returns OK, emit your verbal/text reply and let the loop close.`;
+This is the LAST tool call in a healthy turn. After it returns OK, emit your verbal/text reply (see Final reply rule below) and let the loop close.
+
+### Final reply rule (load-bearing)
+
+After \`suggest_next_prompts\` returns, your final text reply MUST be brief — **one short sentence**, ideally just stating what you just did. Do NOT rephrase, paraphrase, summarize, or hint at the chip suggestions in prose. The chips speak for themselves; duplicating them in text makes the reply long and noisy.
+
+GOOD (≤1 sentence, no chip rephrasing):
+- "Pulled 17 Nolan films."
+- "Grouped by year — 12 buckets, top one is 2010."
+- "Two branches running off the lookup now."
+
+BAD (rephrasing the chips in prose):
+- "Pulled 17 Nolan films. What's next? We could sort these by rating to see which ones the critics loved most, or group them by year to see the release trends."
+- "Done — here are some ideas: try grouping by year, or sorting by IMDB rating, or filtering to recent films."
+
+The chips render right under your reply. Never list what's possible — just say what happened.`;
 
 function mcpToolAffordances(names: string[]): string {
   if (names.length === 0) return "";
@@ -296,13 +380,42 @@ export function buildSystemInstruction({
   enableSuggestedPrompts,
 }: BuildArgs): string {
   const english = languageMode === "english";
+
+  // The tool-sequence reminder lives inside CANVAS_CONTRACT but its
+  // contents depend on whether `suggest_next_prompts` is available. Build
+  // it here and template-replace the placeholder so the prompt never
+  // mentions a tool that isn't registered.
+  const turnSequence = enableSuggestedPrompts
+    ? `**Tool sequence for every multi-stage turn**:
+  1. \`update_canvas\` (cumulative; include every existing stage plus the new one)
+  2. \`run_pipeline\` (executes the pipeline, populates every results tab via \`$facet\`)
+  3. \`suggest_next_prompts\` (2–3 short follow-ups)
+  4. Final text reply (1 brief sentence — see "Final reply rule" below)
+
+That's 3 tool calls per turn, not 10+. If you find yourself making more, you're either re-emitting the same \`update_canvas\` multiple times (do not do this) or trying to call a tool that isn't registered (the framework will error — pick a different tool).
+
+**Do not batch \`update_canvas\` and \`run_pipeline\` into one parallel tool-call response.** Call \`update_canvas\` first, wait for its response, then call \`run_pipeline\`. \`run_pipeline\` needs the stage_ids that the canvas just registered.`
+    : `**Tool sequence for every multi-stage turn**:
+  1. \`update_canvas\` (cumulative; include every existing stage plus the new one)
+  2. \`run_pipeline\` (executes the pipeline, populates every results tab via \`$facet\`)
+  3. Final text reply (1 brief sentence — just state what just happened)
+
+That's 2 tool calls per turn. **The \`suggest_next_prompts\` tool has been disabled by the user — do not attempt to call it.** If you find yourself making more than 2 tool calls in a healthy turn, you're either re-emitting the same \`update_canvas\` multiple times (do not do this) or trying to call a tool that isn't registered.
+
+**Do not batch \`update_canvas\` and \`run_pipeline\` into one parallel tool-call response.** Call \`update_canvas\` first, wait for its response, then call \`run_pipeline\`. \`run_pipeline\` needs the stage_ids that the canvas just registered.`;
+
+  const canvasContract = CANVAS_CONTRACT.replace(
+    "%TURN_SEQUENCE%",
+    turnSequence,
+  );
+
   return [
     english ? PERSONA_ENGLISH : PERSONA_INTERNATIONAL,
     english ? LANGUAGE_RULE : null,
     atlasAvailable ? OFF_TOPIC_CONNECTED : OFF_TOPIC_DISCONNECTED,
     DATASET,
     TOOLING_RULE,
-    CANVAS_CONTRACT,
+    canvasContract,
     enableSuggestedPrompts ? SUGGEST_FOLLOWUPS_RULE : null,
     atlasAvailable
       ? mcpToolAffordances(mcpToolNames)

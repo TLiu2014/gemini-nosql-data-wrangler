@@ -53,9 +53,17 @@ const EXEC_BADGE: Record<NonNullable<StageNodeData["executionState"]>, string> =
 
 type StageNodeType = Node<StageNodeData, "stageNode">;
 
+// Slate-500 + Database icon are the safe fallbacks when the agent ships a
+// stage type we don't have a registry entry for (e.g. it hallucinates an
+// `MQL_SET` or `MQL_ADDFIELDS` we never registered). Without these the
+// component renders `<undefined />` and React crashes the entire tree
+// with "Element type is invalid".
+const FALLBACK_STAGE_COLOR = "#64748b";
+const FALLBACK_STAGE_ICON = Database;
+
 function StageNodeImpl({ id, data, selected }: NodeProps<StageNodeType>) {
-  const color = STAGE_COLORS[data.stageType];
-  const Icon = STAGE_ICONS[data.stageType];
+  const color = STAGE_COLORS[data.stageType] ?? FALLBACK_STAGE_COLOR;
+  const Icon = STAGE_ICONS[data.stageType] ?? FALLBACK_STAGE_ICON;
   const isVectorSearch = data.stageType === "MQL_VECTOR_SEARCH";
   const stageLabel = STAGE_LABELS[data.stageType] ?? data.stageType;
   const { onShowOutput, onEdit, readOnly, validReconnectNodeIdRef, selfLoopReconnectNodeIdRef } = useStageNodeCallbacks();
