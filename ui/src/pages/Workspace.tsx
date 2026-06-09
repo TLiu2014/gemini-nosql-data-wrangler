@@ -37,6 +37,10 @@ import {
   encodeSchemaToFragment,
 } from "@/lib/shareUrl";
 import { downloadMqlScript, stagesToMqlScript } from "@/lib/exportMql";
+import {
+  ExportPreviewDialog,
+  type ExportPreview,
+} from "@/components/export/ExportPreviewDialog";
 
 // Connection status + Connect button moved to the TopBar, so the chat
 // sidebar no longer needs to host them. The chat panel still needs enough
@@ -382,6 +386,19 @@ export default function Workspace() {
           setResults((prev) => {
             const idx = prev.findIndex((r) => r.stageId === msg.stageId);
             if (idx >= 0) {
+              // Guard against a duplicate/erroneous re-run (e.g. the agent
+              // fires run_pipeline twice, or once against the wrong
+              // collection) blanking a tab that already has rows: if the
+              // incoming message is empty but we already have data for this
+              // stage, keep the existing rows.
+              const existing = prev[idx];
+              if (
+                msg.rows.length === 0 &&
+                Array.isArray(existing.rows) &&
+                existing.rows.length > 0
+              ) {
+                return prev;
+              }
               const next = prev.slice();
               next[idx] = msg;
               return next;
@@ -495,27 +512,54 @@ export default function Workspace() {
 
   // Probe the server for env-configured credentials so a missing Settings
   // value can fall back to the server's .env defaults instead of blocking.
+  //
+  // Under `npm run dev` the Vite UI comes up in ~150ms but the server takes
+  // a beat longer, so the first probe usually hits ECONNREFUSED through the
+  // proxy. We retry with backoff until /health answers (or the cap is hit)
+  // so a fresh page load doesn't get stuck thinking nothing is configured.
+  const probeOnce = useCallback(async (): Promise<{
+    ok: boolean;
+    hasApiKey: boolean;
+    hasMongoUri: boolean;
+  }> => {
+    try {
+      const res = await fetch("/health");
+      if (!res.ok) return { ok: false, hasApiKey: false, hasMongoUri: false };
+      const data = (await res.json()) as {
+        geminiKeyConfigured?: boolean;
+        mongoUriConfigured?: boolean;
+      };
+      return {
+        ok: true,
+        hasApiKey: !!data.geminiKeyConfigured,
+        hasMongoUri: !!data.mongoUriConfigured,
+      };
+    } catch {
+      return { ok: false, hasApiKey: false, hasMongoUri: false };
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        const res = await fetch("/health");
-        if (!res.ok) return;
-        const data = (await res.json()) as {
-          geminiKeyConfigured?: boolean;
-          mongoUriConfigured?: boolean;
-        };
+      const delays = [0, 250, 500, 1000, 2000, 3000, 5000];
+      for (let i = 0; i < delays.length; i++) {
+        if (delays[i] > 0) {
+          await new Promise((r) => setTimeout(r, delays[i]));
+        }
         if (cancelled) return;
-        setServerHasApiKey(!!data.geminiKeyConfigured);
-        setServerHasMongoUri(!!data.mongoUriConfigured);
-      } catch {
-        /* health endpoint unreachable — leave both false (block as before) */
+        const result = await probeOnce();
+        if (result.ok) {
+          setServerHasApiKey(result.hasApiKey);
+          setServerHasMongoUri(result.hasMongoUri);
+          return;
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [probeOnce]);
 
   /**
    * Connect wrapper with credential checks. A value counts as "available" if
@@ -530,9 +574,31 @@ export default function Workspace() {
    *   - No MongoDB URI anywhere → ALLOW but warn: the app supports
    *     canvas-only mode (no database, agent still works for design). Heads-up.
    */
-  const handleConnectAttempt = useCallback(() => {
-    const hasApiKey = !!settings.apiKey.trim() || serverHasApiKey;
-    const hasMongoUri = !!settings.mongoUri.trim() || serverHasMongoUri;
+  const handleConnectAttempt = useCallback(async () => {
+    // Under `npm run dev` the UI comes up before the server, so the initial
+    // /health probe usually hits ECONNREFUSED through the proxy and the
+    // cached flags stay false. By the time the user actually clicks Connect
+    // the server is almost always up, so fire one fresh probe now to get the
+    // current truth. We don't await the background retry loop — it's there
+    // to keep state warm for other reads, not to gate this click.
+    const settingsApiKey = !!settings.apiKey.trim();
+    const settingsMongoUri = !!settings.mongoUri.trim();
+    let configuredApiKey = serverHasApiKey;
+    let configuredMongoUri = serverHasMongoUri;
+    if (
+      (!settingsApiKey && !configuredApiKey) ||
+      (!settingsMongoUri && !configuredMongoUri)
+    ) {
+      const fresh = await probeOnce();
+      if (fresh.ok) {
+        configuredApiKey = fresh.hasApiKey;
+        configuredMongoUri = fresh.hasMongoUri;
+        setServerHasApiKey(fresh.hasApiKey);
+        setServerHasMongoUri(fresh.hasMongoUri);
+      }
+    }
+    const hasApiKey = settingsApiKey || configuredApiKey;
+    const hasMongoUri = settingsMongoUri || configuredMongoUri;
     if (!hasApiKey) {
       flashSaveNotice(
         "⚠ No Gemini API key in Settings — open Settings → Connection and paste your AI Studio key, then click Connect.",
@@ -550,6 +616,7 @@ export default function Workspace() {
     settings.mongoUri,
     serverHasApiKey,
     serverHasMongoUri,
+    probeOnce,
     ws,
     flashSaveNotice,
   ]);
@@ -562,6 +629,27 @@ export default function Workspace() {
     setMflixRefreshing(true);
     ws.send({ type: "mflix.refresh" });
   }, [ws]);
+
+  // Start over: wipe the local timeline, results, and canvas (back to the
+  // fresh-load state for the current sampleFlow — empty by default, so the
+  // chat shows the 3 demo openers again), then tell the server to reset the
+  // agent's memory. The WebSocket stays open, so the next message is answered
+  // immediately without a reconnect; Gemini just sees a brand-new flow.
+  const handleClearChat = useCallback(() => {
+    setChatEntries([]);
+    setResults([]);
+    setActiveResultsTab(null);
+    seenResultStageIdsRef.current.clear();
+    setAgentBusy(false);
+    setSchema(
+      settings.sampleFlow === "data"
+        ? SAMPLE_MFLIX_DEMO_FLOW
+        : settings.sampleFlow === "vector"
+          ? SAMPLE_MFLIX_VECTOR_FLOW
+          : null,
+    );
+    ws.send({ type: "chat.reset" });
+  }, [settings.sampleFlow, ws]);
 
   const handleSendText = useCallback(
     (text: string) => {
@@ -860,12 +948,32 @@ export default function Workspace() {
     }
   }, [schema]);
 
+  // Export preview dialog state. Both the image and MQL export actions now
+  // open a preview (instead of downloading straight away) so the user can
+  // eyeball the result first; the dialog's Download button saves the file.
+  const [exportPreview, setExportPreview] = useState<ExportPreview | null>(
+    null,
+  );
+
   const handleExportMql = useCallback(() => {
     if (!schema) return;
-    const body = stagesToMqlScript(schema);
+    const text = stagesToMqlScript(schema);
     const name = schema.pipeline?.name || "pipeline";
-    downloadMqlScript(name, body);
+    setExportPreview({ kind: "mql", text, name });
   }, [schema]);
+
+  const handleExportDownload = useCallback((preview: ExportPreview) => {
+    if (preview.kind === "mql") {
+      downloadMqlScript(preview.name, preview.text);
+      return;
+    }
+    const a = document.createElement("a");
+    a.href = preview.dataUrl;
+    a.download = `${preview.name}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }, []);
 
   /**
    * Snapshot the canvas as a PNG download. Uses `html-to-image`'s `toPng`
@@ -896,12 +1004,11 @@ export default function Workspace() {
           return true;
         },
       });
-      const a = document.createElement("a");
-      a.href = dataUrl;
-      a.download = `${schema.pipeline?.name || "pipeline"}.png`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      setExportPreview({
+        kind: "image",
+        dataUrl,
+        name: schema.pipeline?.name || "pipeline",
+      });
     } catch (err) {
       console.warn("[workspace] export image failed:", err);
     } finally {
@@ -948,6 +1055,7 @@ export default function Workspace() {
             <AgentChatPanel
               entries={chatEntries}
               onSendText={handleSendText}
+              onClearChat={handleClearChat}
               busy={agentBusy}
               connected={ws.state === "connected"}
               atlasConnected={atlasConnection === "connected"}
@@ -1114,6 +1222,12 @@ export default function Workspace() {
           );
         })()}
       </div>
+
+      <ExportPreviewDialog
+        preview={exportPreview}
+        onClose={() => setExportPreview(null)}
+        onDownload={handleExportDownload}
+      />
     </div>
   );
 }

@@ -4,6 +4,7 @@ import {
   Loader2,
   Mic,
   MicOff,
+  RotateCcw,
   Send,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -37,6 +38,10 @@ interface AgentChatPanelProps {
   entries: ChatEntry[];
   /** Send a typed message. The panel handles the input field state internally. */
   onSendText: (text: string) => void;
+  /** Clear the timeline and start a fresh chat (keeps the connection). The
+   *  host also resets the canvas/results and tells the server to wipe the
+   *  agent's memory. */
+  onClearChat: () => void;
   /** True when the agent is currently processing a turn. */
   busy: boolean;
   /** Whether the WebSocket session is open. Controls input enabled state. */
@@ -108,11 +113,10 @@ const DEMO_FLOWS: DemoFlow[] = [
     id: "vibes",
     displayName: "Demo 1 · Vibes search",
     steps: [
-      { label: "Load movies", prompt: "Load the embedded_movies collection." },
       {
         label: "Find by vibe",
         prompt:
-          "Find me movies about lone cowboys, ruthless outlaws, and dusty gunfights.",
+          "Find me movies about lone cowboys, ruthless outlaws, and dusty gunfights from the embedded_movies collection",
       },
       {
         label: "Filter year >2000",
@@ -135,9 +139,9 @@ const DEMO_FLOWS: DemoFlow[] = [
       },
       { label: "Join movies", prompt: "Join the movie details to his comments." },
       {
-        label: "Branch recent",
+        label: "Filter recent",
         prompt:
-          "Create a branch: filter to movies after 2000, and show just the title and comment.",
+          "Filter to movies after 2000, and show just the title and comment.",
       },
       {
         label: "Branch by genre",
@@ -198,6 +202,7 @@ const DEMO_OPENERS = DEMO_FLOWS.map((d) => ({
 export function AgentChatPanel({
   entries,
   onSendText,
+  onClearChat,
   busy,
   connected,
   atlasConnected,
@@ -450,6 +455,26 @@ export function AgentChatPanel({
             label=""
             active={micArmed && !voice.muted}
           />
+        </div>
+      )}
+
+      {/* Clear / new-chat bar — only once the conversation has started, so
+          the empty state stays clean. Keeps the WebSocket open; the host
+          resets the canvas/results and the server's agent memory. */}
+      {entries.length > 0 && (
+        <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-3 py-1.5">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            Chat
+          </span>
+          <button
+            type="button"
+            onClick={onClearChat}
+            title="Clear this chat and start over from the demos (keeps the connection)"
+            className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-800"
+          >
+            <RotateCcw className="h-3 w-3" />
+            Reset chat
+          </button>
         </div>
       )}
 
@@ -787,11 +812,25 @@ function TraceEntry({
     );
   }
   if (trace.kind === "info" && (trace.text || trace.label)) {
-    // The "thinking" info trace is fully redundant with the violet busy
-    // pill at the bottom of the panel, which already shows "Thinking…"
-    // (and switches to context-aware labels once tools start firing).
-    // Drop it from the timeline entirely.
-    if (trace.label === "thinking") return null;
+    // "thinking" info traces come in two flavors:
+    //   - the turn-start "Thinking…" milestone (no duration): redundant with
+    //     the violet busy pill at the bottom, so drop it.
+    //   - a "Thought for Xs" pill (carries durationMs): emitted right before
+    //     the agent's text reply to show how long it reasoned. Render it as a
+    //     small persistent pill in the timeline.
+    if (trace.label === "thinking") {
+      if (typeof trace.durationMs === "number") {
+        return (
+          <div className="flex">
+            <span className="inline-flex items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">
+              <span className="text-violet-400">✦</span>
+              Thought for {fmtDuration(trace.durationMs)}
+            </span>
+          </div>
+        );
+      }
+      return null;
+    }
     return (
       <div className="font-mono text-[11px] italic text-slate-400">
         {trace.label ? `[${trace.label}] ` : ""}

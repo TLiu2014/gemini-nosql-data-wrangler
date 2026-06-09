@@ -11,7 +11,10 @@ import {
 import type { Content } from "@google/genai";
 
 import type { MongoMcpClient } from "../mcp/mongoClient.js";
-import { stripHeavyFieldsFromMcpResult } from "../mcp/responseUtils.js";
+import {
+  extractDocsFromMcpAggregate,
+  stripHeavyFieldsFromMcpResult,
+} from "../mcp/responseUtils.js";
 import type { ClientSocket } from "../websocket/clientSocket.js";
 import type { LanguageMode } from "../websocket/protocol.js";
 import { buildCustomTools, CUSTOM_TOOL_NAMES } from "./customTools.js";
@@ -31,12 +34,18 @@ import { buildSystemInstruction } from "./systemInstruction.js";
  * (used inside `run_pipeline`'s server-side `$facet`) still has access to
  * aggregate; the agent does not.
  */
+/**
+ * Kept deliberately small. `find`/`count` were removed: they let the model
+ * "preview" or "verify" data with extra round-trips that duplicate what
+ * `run_pipeline` already shows per-stage, which was the main source of the
+ * slow, multi-call turns. The grounding tools (`list-*`, `collection-schema`)
+ * stay available for genuinely unknown databases, but the system instruction
+ * tells the agent NOT to call them for the known `sample_mflix` demo.
+ */
 const MCP_TOOLS_ALLOWLIST = [
   "list-databases",
   "list-collections",
   "collection-schema",
-  "find",
-  "count",
 ];
 
 const APP_NAME = "gemini-nosql-data-wrangler";
@@ -86,7 +95,9 @@ export class AgentLoop {
   private readonly llm: Gemini;
   private runner: InMemoryRunner | null = null;
   private mcpToolset: MCPToolset | null = null;
-  private readonly sessionId = randomUUID();
+  /** ADK session id. Reassigned by {@link reset} to wipe Gemini's memory for
+   *  a fresh chat while keeping the WebSocket + spawned MCP process alive. */
+  private sessionId = randomUUID();
   /** Most recent canvas JSON the agent committed to. Read by the
    *  instruction provider so each turn sees fresh state. */
   private currentCanvas: string | null = null;
@@ -96,6 +107,24 @@ export class AgentLoop {
    *  Keyed by tool name; values are pushed/popped as a stack so re-entrant
    *  calls (rare, but possible with parallel tool calls) stay matched. */
   private readonly toolStartStack = new Map<string, number[]>();
+  /** Wall-clock of the last user-visible activity in the current turn (turn
+   *  start, or the moment the most recent tool call returned). Used to time
+   *  the "thinking" gap that precedes each agent text reply so the UI can
+   *  show a "Thought for Xs" pill. */
+  private lastActivityAt = 0;
+  /**
+   * Per-turn memo of the FIRST successful `run_pipeline` execution. Cleared
+   * at the start of every user turn. A single turn should only ever hit
+   * MongoDB once — the agent occasionally fires `run_pipeline` two or three
+   * times (a redundant "re-check", or a second attempt against the wrong
+   * collection that returns 0 docs and makes it apologize). When that
+   * happens we short-circuit: skip the extra round-trip entirely and hand
+   * back the already-successful result so the agent sees success, stops, and
+   * the populated results tabs aren't disturbed.
+   */
+  private runPipelineMemo:
+    | Awaited<ReturnType<AgentLoop["runPipelineFacet"]>>
+    | null = null;
 
   constructor(private readonly opts: AgentLoopOptions) {
     this.llm = new Gemini({
@@ -221,6 +250,10 @@ export class AgentLoop {
           durationMs,
         });
 
+        // Reset the "thinking" clock: any reasoning the model does AFTER this
+        // tool result (before its next text reply) is timed from here.
+        this.lastActivityAt = Date.now();
+
         // Returning undefined means "use the original response unchanged".
         // For MCP tools we want the model to see the stripped version too
         // (otherwise huge `plot_embedding` arrays burn its context budget),
@@ -282,6 +315,9 @@ export class AgentLoop {
     }
     this.inFlight = true;
     const turnStartedAt = Date.now();
+    this.lastActivityAt = turnStartedAt;
+    // Fresh turn — allow exactly one real run_pipeline execution.
+    this.runPipelineMemo = null;
 
     const inputKind = typeof input === "string" ? "text" : "audio";
     const inputPreview =
@@ -334,7 +370,31 @@ export class AgentLoop {
         // "final" event. Don't double-emit identical text.
         if (collected === agentTextEmitted) continue;
         agentTextEmitted = collected;
-        this.opts.client.sendTrace({ kind: "agent_text", text: collected });
+
+        // Safety net for a model misbehavior we've seen: the agent sometimes
+        // pastes the `suggest_next_prompts` arguments straight into its final
+        // text reply ("Found those westerns. { \"label\": ..., \"prompt\":
+        // ... }, ..."). The chips already render from the tool-call payload,
+        // so dumping the JSON in the prose is pure noise. Strip it
+        // post-hoc — the system instruction also tells the model not to do
+        // this, but the regex is the belt to the prompt's suspenders.
+        const sanitized = stripSuggestionLeakage(collected);
+        if (!sanitized) continue;
+
+        // Emit a "thinking" pill in front of the reply that captures how long
+        // the model reasoned since the last activity (turn start, or the most
+        // recent tool result). Skip sub-perceptual gaps so the timeline isn't
+        // littered with "Thought for 0.0s" pills.
+        const thinkingMs = Date.now() - this.lastActivityAt;
+        if (thinkingMs >= 300) {
+          this.opts.client.sendTrace({
+            kind: "info",
+            label: "thinking",
+            durationMs: thinkingMs,
+          });
+        }
+        this.opts.client.sendTrace({ kind: "agent_text", text: sanitized });
+        this.lastActivityAt = Date.now();
       }
     } catch (err) {
       console.error("[agent] turn failed:", err);
@@ -376,39 +436,91 @@ export class AgentLoop {
     final_rows_sample: unknown[];
     execution_mode: "facet" | "sequential_fallback";
   }> {
-    const { database, collection, pipeline, stageIds, previewLimit } = args;
+    const { database, pipeline, stageIds, previewLimit } = args;
+    let { collection } = args;
 
-    const facetBranches: Record<string, unknown[]> = {};
-    for (let i = 0; i < stageIds.length; i++) {
-      const prefix = pipeline.slice(0, i);
-      facetBranches[`s${i}`] = [...prefix, { $limit: previewLimit }];
+    // Per-turn guard: a healthy turn runs the pipeline once. If the agent
+    // already ran it this turn, don't hit MongoDB again — return the cached
+    // successful result so a redundant or wrong second attempt can't blank
+    // the tabs or trick the agent into "I couldn't find anything".
+    if (this.runPipelineMemo) {
+      console.warn(
+        `[agent] run_pipeline called again this turn — returning cached result, skipping MongoDB (requested ${database}.${collection}, ${stageIds.length} stages)`,
+      );
+      return this.runPipelineMemo;
+    }
+
+    // Rewrite any `$vectorSearch` / `$search` stage the model emitted into the
+    // equivalent `$match + $text` query. There's no embedding service or Atlas
+    // Search node in this environment, so those stages either error or return
+    // 0 docs — the #1 cause of "I'm having trouble finding…". Converting them
+    // in place (1:1, so stage_ids stay aligned) makes the query actually run.
+    const { pipeline: workingPipeline, converted } =
+      rewriteVectorSearchToText(pipeline);
+    if (converted) {
+      console.warn(
+        "[agent] run_pipeline: rewrote $vectorSearch/$search stage(s) into $match+$text",
+      );
+    }
+
+    // `$text` only works on the `movies` collection (the only one with a text
+    // index). The agent is told to switch the collection for vibes queries,
+    // but it sometimes leaves it as `embedded_movies` (the canvas source) or
+    // another collection, which has no text index → 0 docs. Correct it here.
+    const usesTextSearch = converted || pipelineUsesTextSearch(workingPipeline);
+    if (usesTextSearch && collection !== "movies") {
+      console.warn(
+        `[agent] run_pipeline: text query targeted ${collection} (no text index) — redirecting to movies`,
+      );
+      collection = "movies";
     }
 
     let perStageRows: Map<string, unknown[]>;
     let executionMode: "facet" | "sequential_fallback" = "facet";
 
-    const facetResult = await this.tryFacetPipeline(database, collection, [
-      { $facet: facetBranches },
-    ]);
-
-    if (facetResult.ok) {
-      perStageRows = new Map();
-      for (let i = 0; i < stageIds.length; i++) {
-        const branch = facetResult.facetDoc[`s${i}`];
-        perStageRows.set(stageIds[i], Array.isArray(branch) ? branch : []);
-      }
-    } else {
+    // `$text` cannot run inside a `$facet` sub-pipeline ("query requires text
+    // score metadata, but it is not available"), so for text-search pipelines
+    // skip the doomed $facet round-trip entirely and go straight to the
+    // parallel per-stage aggregates. Saves a guaranteed-failing query.
+    if (usesTextSearch) {
       executionMode = "sequential_fallback";
-      console.warn(
-        `[agent] run_pipeline: $facet failed (${facetResult.errorMessage}); falling back to sequential prefix aggregates`,
-      );
       perStageRows = await this.runSequentialPrefixAggregates(
         database,
         collection,
-        pipeline,
+        workingPipeline,
         stageIds,
         previewLimit,
       );
+    } else {
+      const facetBranches: Record<string, unknown[]> = {};
+      for (let i = 0; i < stageIds.length; i++) {
+        const prefix = workingPipeline.slice(0, i);
+        facetBranches[`s${i}`] = [...prefix, { $limit: previewLimit }];
+      }
+
+      const facetResult = await this.tryFacetPipeline(database, collection, [
+        { $facet: facetBranches },
+      ]);
+
+      if (facetResult.ok) {
+        perStageRows = new Map();
+        for (let i = 0; i < stageIds.length; i++) {
+          const branch = facetResult.facetDoc[`s${i}`];
+          perStageRows.set(stageIds[i], Array.isArray(branch) ? branch : []);
+        }
+      } else {
+        executionMode = "sequential_fallback";
+        console.warn(
+          `[agent] run_pipeline: $facet failed (${facetResult.errorMessage}); falling back to sequential prefix aggregates`,
+        );
+        perStageRows = await this.runSequentialPrefixAggregates(
+          database,
+          collection,
+          workingPipeline,
+          stageIds,
+          previewLimit,
+        );
+      }
     }
 
     const previewed: Array<{ stageId: string; rows: number }> = [];
@@ -425,13 +537,16 @@ export class AgentLoop {
 
     const finalRows = perStageRows.get(stageIds[stageIds.length - 1]) ?? [];
     const SUMMARY_ROW_CAP = 5;
-    return {
+    const result = {
       previewed,
       execution_mode: executionMode,
       final_stage_id: stageIds[stageIds.length - 1],
       final_row_count: finalRows.length,
       final_rows_sample: finalRows.slice(0, SUMMARY_ROW_CAP),
     };
+    // Memoize so any further run_pipeline call this turn short-circuits.
+    this.runPipelineMemo = result;
+    return result;
   }
 
   private async tryFacetPipeline(
@@ -476,7 +591,7 @@ export class AgentLoop {
       const rows = await this.callMcpWithTrace<unknown[]>(
         "aggregate",
         { database, collection, pipeline: prefixPipeline },
-        (cleaned) => extractAggregateDocs(cleaned),
+        (cleaned) => extractDocsFromMcpAggregate(cleaned),
         () => [],
       );
       out.set(stageId, rows);
@@ -557,6 +672,28 @@ export class AgentLoop {
     return false;
   }
 
+  /**
+   * Start a fresh chat in-place: spin up a new ADK session (so Gemini has no
+   * memory of the prior flow) and clear the canvas snapshot + per-turn state.
+   * Keeps the runner, tools, and spawned MCP process so the next message is
+   * answered immediately — no reconnect cost.
+   */
+  async reset(): Promise<void> {
+    this.currentCanvas = null;
+    this.runPipelineMemo = null;
+    this.inFlight = false;
+    this.toolStartStack.clear();
+    this.sessionId = randomUUID();
+    if (this.runner) {
+      await this.runner.sessionService.createSession({
+        appName: APP_NAME,
+        userId: SESSION_USER_ID,
+        sessionId: this.sessionId,
+      });
+    }
+    console.log("[agent] chat reset — new session, canvas cleared");
+  }
+
   /** Dispose the agent's MCP toolset. Called when the WS disconnects so we
    *  don't leak `mongodb-mcp-server` subprocesses. */
   async dispose(): Promise<void> {
@@ -577,37 +714,109 @@ function isLikelyMcpToolName(name: string): boolean {
 }
 
 /**
- * Parse the docs out of an MCP `aggregate` response. MCP returns a content
- * array of text entries; the documents are emitted as separate JSON-parsable
- * text fragments. Permissive parser — anything that JSON-parses to an
- * object/array contributes its docs.
+ * Does this aggregation pipeline use the `$text` operator anywhere? Such
+ * pipelines can't run inside `$facet` (text-score metadata isn't available
+ * there) and require the `movies` collection's text index. We detect it by a
+ * deep scan for a `$text` key rather than only checking the first stage,
+ * since the agent sometimes nests it under `$and`/`$or`.
  */
-function extractAggregateDocs(raw: unknown): unknown[] {
-  if (!raw || typeof raw !== "object") return [];
-  const r = raw as { content?: Array<{ type?: string; text?: string }> };
-  if (!Array.isArray(r.content)) return [];
-  const docs: unknown[] = [];
-  for (const entry of r.content) {
-    if (entry?.type !== "text" || typeof entry.text !== "string") continue;
-    const text = entry.text.trim();
-    if (!text || (text[0] !== "{" && text[0] !== "[")) continue;
-    try {
-      const parsed = JSON.parse(text);
-      if (Array.isArray(parsed)) docs.push(...parsed);
-      else if (parsed && typeof parsed === "object") docs.push(parsed);
-    } catch {
-      /* skip non-JSON fragments */
+function pipelineUsesTextSearch(pipeline: unknown[]): boolean {
+  const scan = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.some(scan);
+    if (value && typeof value === "object") {
+      for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+        if (key === "$text") return true;
+        if (scan(v)) return true;
+      }
     }
+    return false;
+  };
+  return scan(pipeline);
+}
+
+/**
+ * Pull a human-readable search phrase out of a `$vectorSearch` / `$search`
+ * stage spec. The model puts the text under various keys depending on which
+ * operator it thinks it's using.
+ */
+function extractSearchText(spec: unknown): string | null {
+  if (!spec || typeof spec !== "object") return null;
+  const s = spec as Record<string, unknown>;
+  // Common flat shapes: $vectorSearch with a text query the model invented.
+  for (const key of ["queryText", "query", "queryString", "text", "search"]) {
+    const v = s[key];
+    if (typeof v === "string" && v.trim()) return v.trim();
   }
-  return docs;
+  // Atlas Search `$search: { text: { query, path } }`.
+  const text = s.text;
+  if (text && typeof text === "object") {
+    const q = (text as Record<string, unknown>).query;
+    if (typeof q === "string" && q.trim()) return q.trim();
+  }
+  return null;
+}
+
+/**
+ * Rewrite any `$vectorSearch` / `$search` stage into an equivalent
+ * `$match: { $text: { $search: "<phrase>" } }`. This environment has neither
+ * an embedding service nor an Atlas Search node, so those stages can't run —
+ * the demos are designed to execute via the `movies` text index instead. The
+ * rewrite is 1:1 (one stage in → one stage out) so the caller's `stage_ids`
+ * stay aligned with the pipeline. Stages that aren't search stages pass
+ * through untouched.
+ */
+function rewriteVectorSearchToText(pipeline: unknown[]): {
+  pipeline: unknown[];
+  converted: boolean;
+} {
+  let converted = false;
+  const out = pipeline.map((stage) => {
+    if (!stage || typeof stage !== "object") return stage;
+    const s = stage as Record<string, unknown>;
+    const searchKey = "$vectorSearch" in s ? "$vectorSearch" : "$search" in s ? "$search" : null;
+    if (!searchKey) return stage;
+    converted = true;
+    const phrase = extractSearchText(s[searchKey]);
+    // If we can't recover a phrase, fall back to a pass-through match so the
+    // pipeline still runs (returns rows) rather than erroring on the bad
+    // stage. Better to show unfiltered results than an empty panel.
+    return phrase
+      ? { $match: { $text: { $search: phrase } } }
+      : { $match: {} };
+  });
+  return { pipeline: out, converted };
 }
 
 function extractFirstFacetDoc(
   raw: unknown,
 ): Record<string, unknown> | null {
-  const docs = extractAggregateDocs(raw);
+  const docs = extractDocsFromMcpAggregate(raw);
   if (docs.length === 0) return null;
   const first = docs[0];
   if (!first || typeof first !== "object") return null;
   return first as Record<string, unknown>;
+}
+
+/**
+ * Remove any `suggest_next_prompts`-shaped JSON the model leaked into its
+ * text reply. Matches `{ "label": "…", "prompt": "…" }` objects (with
+ * optional whitespace, trailing commas, and outer `[…]` brackets) and
+ * deletes them, then collapses the leftover whitespace so the remaining
+ * one-liner reply reads cleanly. Safe on inputs that don't contain the
+ * pattern — they pass through unchanged.
+ */
+export function stripSuggestionLeakage(text: string): string {
+  const suggestionObject =
+    /\{\s*"label"\s*:\s*"[^"]*"\s*,\s*"prompt"\s*:\s*"[^"]*"\s*\}\s*,?/g;
+  let cleaned = text.replace(suggestionObject, "");
+  // Mop up any orphan brackets/commas left behind when we excised the
+  // objects from inside an array literal, and squash the run of blank
+  // lines that often surrounds the leaked block.
+  cleaned = cleaned
+    .replace(/\[\s*\]/g, "")
+    .replace(/,\s*(?=[\]\n])/g, "")
+    .replace(/^\s*[\[\],]+\s*$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return cleaned;
 }

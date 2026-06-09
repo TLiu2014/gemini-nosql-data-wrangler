@@ -42,7 +42,11 @@ export type ClientMessage =
   /** Ask the server to refresh the Mflix-collections reference panel from the
    *  live Atlas connection. Requires Atlas to be connected; otherwise the
    *  server replies with `{type: "mflix.collections", error}`. */
-  | { type: "mflix.refresh"; database?: string };
+  | { type: "mflix.refresh"; database?: string }
+  /** Start a fresh chat without dropping the WebSocket: the server resets the
+   *  agent's conversation memory + canvas snapshot so Gemini treats the next
+   *  message as a new flow. The UI clears its own timeline/canvas/results. */
+  | { type: "chat.reset" };
 
 /** Which backend component a `connection.status` message refers to. */
 export type ConnectionComponent = "gemini" | "atlas";

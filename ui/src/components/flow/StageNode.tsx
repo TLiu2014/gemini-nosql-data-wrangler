@@ -10,6 +10,7 @@ import {
   FunctionSquare,
   Code2,
   ExternalLink,
+  Eye,
   Pencil,
   Sparkles,
   ListFilter,
@@ -66,7 +67,7 @@ function StageNodeImpl({ id, data, selected }: NodeProps<StageNodeType>) {
   const Icon = STAGE_ICONS[data.stageType] ?? FALLBACK_STAGE_ICON;
   const isVectorSearch = data.stageType === "MQL_VECTOR_SEARCH";
   const stageLabel = STAGE_LABELS[data.stageType] ?? data.stageType;
-  const { onShowOutput, onEdit, readOnly, validReconnectNodeIdRef, selfLoopReconnectNodeIdRef } = useStageNodeCallbacks();
+  const { onShowOutput, onEdit, onShowDetails, readOnly, validReconnectNodeIdRef, selfLoopReconnectNodeIdRef } = useStageNodeCallbacks();
   const activeConnection = useConnection((connection) => ({
     inProgress: connection.inProgress,
     isValid: connection.isValid,
@@ -228,6 +229,21 @@ function StageNodeImpl({ id, data, selected }: NodeProps<StageNodeType>) {
                   className="inline-flex h-4 w-4 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
                 >
                   <Pencil className="h-2.5 w-2.5" />
+                </button>
+              )}
+              {onShowDetails && readOnly && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onShowDetails(id);
+                  }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  title="View stage details (or double-click the node)"
+                  aria-label="View stage details"
+                  className="inline-flex h-4 w-4 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                >
+                  <Eye className="h-2.5 w-2.5" />
                 </button>
               )}
             </div>

@@ -57,8 +57,7 @@ export const SAMPLE_MFLIX_DEMO_FLOW: PipelineSchema = {
 };
 
 /**
- * Pre-built director-filmography pipeline — matches the opening state of
- * Demo 3 (Christopher Nolan / BI analytics). Three stages: source → match
+ * Pre-built director-filmography pipeline. Three stages: source → match
  * on directors → project the readable fields. The user can extend this
  * live by asking the agent to "now group by year and calculate average
  * IMDB rating".

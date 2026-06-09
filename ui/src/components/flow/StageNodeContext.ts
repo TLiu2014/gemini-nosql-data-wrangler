@@ -13,6 +13,12 @@ export interface StageNodeCallbacks {
    * when single-click selection is suppressed (e.g. popover edit mode).
    */
   onEdit?: (stageId: string) => void;
+  /**
+   * Called when the user clicks the per-node view (eye) icon in read-only
+   * mode. Clients use this to open a read-only details popover/panel — the
+   * view-only counterpart to {@link StageNodeCallbacks.onEdit}.
+   */
+  onShowDetails?: (stageId: string) => void;
   /** When true, editing/deleting controls are hidden throughout the canvas. */
   readOnly?: boolean;
   /**

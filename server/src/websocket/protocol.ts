@@ -45,7 +45,14 @@ export type ClientMessage =
    */
   | { type: "user.audio"; mimeType: string; data: string }
   /** Refresh the Mflix collections reference panel from the live Atlas connection. */
-  | { type: "mflix.refresh"; database?: string };
+  | { type: "mflix.refresh"; database?: string }
+  /**
+   * Start a fresh chat without tearing down the WebSocket: the server wipes
+   * the agent's conversation memory and canvas snapshot (new ADK session) so
+   * Gemini treats the next message as a brand-new flow. The UI clears its
+   * own timeline / canvas / results in parallel.
+   */
+  | { type: "chat.reset" };
 
 export type ConnectionComponent = "gemini" | "atlas";
 

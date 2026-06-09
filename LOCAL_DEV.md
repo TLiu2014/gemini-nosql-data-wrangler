@@ -65,6 +65,39 @@ docker exec -it gemini-wrangler-mongo mongosh
 > db.movies.getIndexes()                  // includes the text index used by Demo 1
 ```
 
+You should see an index named `cast_text_fullplot_text_genres_text_title_text`
+on `movies` — that's the text index Demo 1's vibes search (`$match + $text`)
+relies on.
+
+---
+
+## Indexes (and why you don't need to copy them from Atlas)
+
+The demos depend on exactly one secondary index: the **text index on
+`movies`** (`cast`, `fullplot`, `genres`, `title`). Good news — it is a normal
+MongoDB index and ships **inside the `sample_mflix` archive**, so
+`mongorestore` recreates it automatically. There is nothing to fetch from
+Atlas; loading the archive already gives you the same index Atlas has.
+
+As a safety net, `scripts/local-mongo-init.sh` verifies the text index after
+the restore and creates it if (and only if) it's missing. This step is
+idempotent, so re-running `docker-compose up` never duplicates it. To confirm:
+
+```bash
+docker exec gemini-wrangler-mongo mongosh --quiet --eval \
+  'db.getSiblingDB("sample_mflix").movies.getIndexes().forEach(i => print(i.name))'
+# _id_
+# cast_text_fullplot_text_genres_text_title_text
+```
+
+**The one index that does NOT come over: the Atlas Vector Search index** on
+`embedded_movies.plot_embedding`. Atlas Search / Vector Search indexes are
+managed by Atlas's search nodes, are not part of any `mongodump` archive, and
+cannot be created on a vanilla `mongod`. That's by design here — the demos
+route "vibes" queries through `$match + $text` on `movies` rather than
+`$vectorSearch`, so they run end-to-end locally without it (see the table
+below).
+
 ---
 
 ## Connection-string precedence (important)
@@ -128,7 +161,15 @@ Anonymous Docker Hub pulls are subject to a public rate limit (100 pulls per 6 h
 
 ## Troubleshooting
 
-**Loader hangs on download.** The script uses `curl` to fetch from `atlas-education.s3.amazonaws.com`. Check connectivity:
+**Init container failed partway through (e.g., download error, missing tool).** The `mongo-init` service is a one-shot container — once it exits (success or failure), `docker-compose up -d` won't re-run it unless you remove the stopped container first. To retry after fixing the underlying issue:
+```bash
+docker-compose rm -f mongo-init       # drop the stopped (failed) container
+docker-compose up -d mongo-init       # re-run the init with the updated script
+docker-compose logs mongo-init -f     # watch progress
+```
+The data volume is separate from the init container, so removing the container doesn't delete any already-loaded data.
+
+**Loader hangs on download.** The script uses `curl` (or `wget` as a fallback) to fetch from `atlas-education.s3.amazonaws.com`. Check connectivity:
 ```bash
 docker exec gemini-wrangler-mongo-init sh -c 'curl -I https://atlas-education.s3.amazonaws.com/sampledata.archive'
 ```

@@ -41,9 +41,9 @@ export interface Settings {
    */
   enableSuggestedPrompts: boolean;
   /**
-   * Auto-send when the user clicks a suggestion chip. When off (default)
-   * clicking fills the composer and the user reviews/edits before pressing
-   * Send. When on, the chip's `prompt` is dispatched immediately.
+   * Auto-send when the user clicks a suggestion chip. When on (default) the
+   * chip's `prompt` is dispatched immediately. When off, clicking fills the
+   * composer and the user reviews/edits before pressing Send.
    */
   autoSendSuggestion: boolean;
   /**
@@ -88,11 +88,11 @@ const DEFAULT_SETTINGS: Settings = {
   startMicMuted: false,
   sampleFlow: "none",
   showSchemaJson: false,
-  showMflixCollections: true,
+  showMflixCollections: false,
   showResultsJsonPane: false,
   enableTextInput: true,
   enableSuggestedPrompts: true,
-  autoSendSuggestion: false,
+  autoSendSuggestion: true,
   enableVoiceMode: false,
   languageMode: "english",
   layoutMode: "side-by-side",

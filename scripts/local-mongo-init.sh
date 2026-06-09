@@ -73,3 +73,36 @@ else
   log "ERROR: restore appeared to complete but sample_mflix.movies is still empty."
   exit 1
 fi
+
+# Ensure the secondary indexes the demos rely on exist. `mongorestore` of the
+# atlas-education archive already recreates `movies`' text index
+# (cast/fullplot/genres/title) — the same one Atlas ships — so this is just a
+# safety net for archives or partial restores that don't include it. It is
+# idempotent: createIndex with a matching spec is a no-op when the index is
+# already present.
+#
+# NOTE: the Atlas *Vector Search* index on `embedded_movies.plot_embedding`
+# is an Atlas-managed search index, NOT a normal MongoDB index — it is not in
+# any mongodump archive and cannot be created on vanilla `mongod`. That's why
+# the demos route vibes queries through `$match + $text` on `movies` instead
+# of `$vectorSearch`. See LOCAL_DEV.md.
+ensure_indexes() {
+  mongosh --host "$HOST" --quiet --eval '
+    const db = db.getSiblingDB("sample_mflix");
+    const hasText = db.movies.getIndexes().some(
+      (ix) => ix.key && ix.key._fts === "text"
+    );
+    if (hasText) {
+      print("[mflix-loader] movies text index already present — skipping.");
+    } else {
+      db.movies.createIndex(
+        { cast: "text", fullplot: "text", genres: "text", title: "text" },
+        { name: "cast_text_fullplot_text_genres_text_title_text" }
+      );
+      print("[mflix-loader] created movies text index.");
+    }
+  '
+}
+
+log "Ensuring demo indexes (movies text index)..."
+ensure_indexes

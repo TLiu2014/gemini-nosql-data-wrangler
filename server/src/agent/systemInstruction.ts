@@ -99,7 +99,7 @@ The canvas stage type and the pipeline contents are NOT the same thing. The canv
 
 **Collection switch for vibes**: if the user previously loaded \`embedded_movies\` (canvas source) and then asks a vibes question, your \`run_pipeline\` call MUST set \`collection: "movies"\`, NOT \`"embedded_movies"\`. The canvas source stage stays as the user labeled it; only the \`run_pipeline\` collection argument switches. This is a known mismatch — the canvas shows the user's mental model, the pipeline uses the collection that actually works.
 
-**Worked example for "Demo 1, step 2"** (user said "Find me movies about lone cowboys, ruthless outlaws, and dusty gunfights" after loading embedded_movies):
+**Worked example for "Demo 1, step 1"** (user said "Find me movies about lone cowboys, ruthless outlaws, and dusty gunfights from the embedded_movies collection" — a single request that both names the source collection AND asks a vibes question, so you emit the source stage AND the vibes stage in one turn):
 
 \`\`\`json
 // 1. update_canvas — cumulative, MQL_VECTOR_SEARCH stage added
@@ -127,7 +127,7 @@ The canvas stage type and the pipeline contents are NOT the same thing. The canv
 }
 \`\`\`
 
-**Step 3 of the same demo** ("Filter to movies after the year 2000") — APPEND, don't restart:
+**Step 2 of the same demo** ("Filter to movies after the year 2000") — APPEND, don't restart:
 
 \`\`\`json
 // 1. update_canvas — same stage_1 and stage_2 verbatim, plus a new MQL_MATCH stage
@@ -311,6 +311,8 @@ This is the LAST tool call in a healthy turn. After it returns OK, emit your ver
 
 After \`suggest_next_prompts\` returns, your final text reply MUST be brief — **one short sentence**, ideally just stating what you just did. Do NOT rephrase, paraphrase, summarize, or hint at the chip suggestions in prose. The chips speak for themselves; duplicating them in text makes the reply long and noisy.
 
+**Never include the \`suggest_next_prompts\` arguments in your text reply.** The tool call ITSELF delivers the prompts to the UI — your text must not contain any JSON, the words "label" or "prompt", or the suggested follow-up sentences in any form (raw, paraphrased, bulleted, or otherwise). Treat the tool call as the entire delivery mechanism; the text reply is a separate one-sentence acknowledgement of what just happened on the canvas.
+
 GOOD (≤1 sentence, no chip rephrasing):
 - "Pulled 17 Nolan films."
 - "Grouped by year — 12 buckets, top one is 2010."
@@ -320,6 +322,10 @@ BAD (rephrasing the chips in prose):
 - "Pulled 17 Nolan films. What's next? We could sort these by rating to see which ones the critics loved most, or group them by year to see the release trends."
 - "Done — here are some ideas: try grouping by year, or sorting by IMDB rating, or filtering to recent films."
 
+BAD (dumping the tool args verbatim):
+- \`Found those westerns. { "label": "Filter by year", "prompt": "Filter these movies to only show those released after 2000." }, { "label": "Sort by rating", "prompt": "Sort by IMDB rating." }\`
+- Any text reply that contains \`{ "label":\` or quoted JSON-looking objects.
+
 The chips render right under your reply. Never list what's possible — just say what happened.`;
 
 function mcpToolAffordances(names: string[]): string {
@@ -328,7 +334,20 @@ function mcpToolAffordances(names: string[]): string {
     .map((n) => `\`${n}\``)
     .join(
       ", ",
-    )}. Use \`list-databases\`/\`list-collections\`/\`collection-schema\` to ground yourself when uncertain, and \`aggregate\` to actually run pipelines you've designed.`;
+    )}. These are GROUNDING tools only — use them solely when you genuinely don't know a database/collection name. **For the \`sample_mflix\` demo you already know the schema (see DATASET above), so you should almost never need to call them.** You do NOT have a \`find\`, \`count\`, or \`aggregate\` tool — \`run_pipeline\` is the only way to execute a pipeline, and it already shows per-stage previews, so never reach for a separate "preview" or "verify" call.
+
+### EFFICIENCY (load-bearing — keep turns fast)
+
+A healthy turn is **exactly two tool calls**: one \`update_canvas\`, then one \`run_pipeline\`${
+    names.length > 0 ? " (plus `suggest_next_prompts` if enabled)" : ""
+  }. To keep turns fast:
+
+- Call \`update_canvas\` **at most once** per turn. Do not re-emit it with tweaks.
+- Call \`run_pipeline\` **at most once** per turn. It populates every stage tab in one round-trip — do not call it again "to check" a stage.
+- Do NOT call \`list-databases\`/\`list-collections\`/\`collection-schema\` to "confirm" \`sample_mflix\` data — you already know it.
+- Never call a grounding tool to preview rows; \`run_pipeline\`'s per-stage preview already shows them.
+
+If you catch yourself making a third tool call in a turn, stop — you almost certainly already have what you need.`;
 }
 
 function atlasUnavailableNotice(detail: string | undefined): string {

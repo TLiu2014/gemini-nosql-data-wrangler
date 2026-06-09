@@ -39,7 +39,9 @@ import {
 } from "./StageEdgeHandles";
 import { GradientEdge } from "./GradientEdge";
 import { NodeToolbarPositionProvider } from "./NodeToolbarPositionContext";
+import { PopoverStageDetails } from "./PopoverStageDetails";
 import { PopoverStageEditor } from "./PopoverStageEditor";
+import { StageDetailsView } from "@/components/config/StageDetailsView";
 import { StageNode } from "./StageNode";
 import { StageNodeContext, type StageNodeCallbacks } from "./StageNodeContext";
 
@@ -100,6 +102,10 @@ export const TransformationFlow = forwardRef<
   const [edges, setEdges] = useState<Edge[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
+  // View-only counterpart to editingNodeId: the node whose read-only details
+  // popover/panel is open. Mutually exclusive with editing (editing is only
+  // possible when !isReadOnly, details only when isReadOnly).
+  const [viewingNodeId, setViewingNodeId] = useState<string | null>(null);
   const [toolbarExpanded, setToolbarExpanded] = useState(true);
   const [popoverPosition, setPopoverPosition] = useState<Position>(Position.Right);
   const [isReadOnly, setIsReadOnly] = useState(readOnly);
@@ -135,6 +141,7 @@ export const TransformationFlow = forwardRef<
       setEdges([]);
       setSelectedNodeId(null);
       setEditingNodeId(null);
+      setViewingNodeId(null);
       return;
     }
     const { name, nodes: newNodes, edges: newEdges } = deserializePipeline(schema);
@@ -144,6 +151,7 @@ export const TransformationFlow = forwardRef<
     setEdges(newEdges.map(withDefaultHandles));
     setSelectedNodeId(null);
     setEditingNodeId(null);
+    setViewingNodeId(null);
     // Re-frame the viewport on the freshly-loaded pipeline. RAF defers until
     // after React has flushed the new nodes/edges into the DOM so fitView
     // measures the correct bounds. Wrapped in try/catch for the first render
@@ -191,6 +199,7 @@ export const TransformationFlow = forwardRef<
         setEdges(newEdges);
         setSelectedNodeId((cur) => (cur && removedIds.has(cur) ? null : cur));
         setEditingNodeId((cur) => (cur && removedIds.has(cur) ? null : cur));
+        setViewingNodeId((cur) => (cur && removedIds.has(cur) ? null : cur));
         emit(newNodes, newEdges);
       } else {
         setNodes((ns) => applyNodeChanges(others, ns) as Node<StageNodeData>[]);
@@ -307,17 +316,30 @@ export const TransformationFlow = forwardRef<
 
   const handleNodeDoubleClick = (node: Node<StageNodeData>) => {
     setSelectedNodeId(node.id);
-    if (!isReadOnly) setEditingNodeId(node.id);
+    // View-only: double-click opens the read-only details. Editable: opens
+    // the config form — same affordance, mode-appropriate target.
+    if (isReadOnly) {
+      setViewingNodeId(node.id);
+    } else {
+      setEditingNodeId(node.id);
+    }
   };
 
   const handlePaneClick = () => {
     setSelectedNodeId(null);
     if (configDisplayMode !== "popover") setEditingNodeId(null);
+    // Clicking empty canvas always dismisses the read-only details popover.
+    setViewingNodeId(null);
   };
 
   const handleEditNode = (stageId: string) => {
     setSelectedNodeId(stageId);
     setEditingNodeId(stageId);
+  };
+
+  const handleShowDetails = (stageId: string) => {
+    setSelectedNodeId(stageId);
+    setViewingNodeId(stageId);
   };
 
   // ── Config panel mutations ───────────────────────────────────────────────
@@ -343,6 +365,7 @@ export const TransformationFlow = forwardRef<
       setEdges(newEdges);
       setSelectedNodeId((cur) => (cur === id ? null : cur));
       setEditingNodeId((cur) => (cur === id ? null : cur));
+      setViewingNodeId((cur) => (cur === id ? null : cur));
       emit(newNodes, newEdges);
     },
     [emit],
@@ -387,13 +410,25 @@ export const TransformationFlow = forwardRef<
     [nodes, editingNodeId],
   );
 
+  const viewingNode = useMemo(
+    () => nodes.find((n) => n.id === viewingNodeId) ?? null,
+    [nodes, viewingNodeId],
+  );
+
   const decoratedNodes = useMemo(
     () => nodes.map((n) => ({ ...n, selected: n.id === selectedNodeId })),
     [nodes, selectedNodeId],
   );
 
   const callbacks = useMemo<StageNodeCallbacks>(
-    () => ({ onShowOutput, onEdit: isReadOnly ? undefined : handleEditNode, readOnly: isReadOnly, validReconnectNodeIdRef, selfLoopReconnectNodeIdRef }),
+    () => ({
+      onShowOutput,
+      onEdit: isReadOnly ? undefined : handleEditNode,
+      onShowDetails: isReadOnly ? handleShowDetails : undefined,
+      readOnly: isReadOnly,
+      validReconnectNodeIdRef,
+      selfLoopReconnectNodeIdRef,
+    }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [onShowOutput, isReadOnly],
   );
@@ -486,6 +521,12 @@ export const TransformationFlow = forwardRef<
                   confirmBeforeDelete={confirmBeforeDelete}
                 />
               )}
+              {isReadOnly && configDisplayMode === "popover" && viewingNode && (
+                <PopoverStageDetails
+                  node={viewingNode}
+                  onClose={() => setViewingNodeId(null)}
+                />
+              )}
             </ReactFlow>
           </div>
 
@@ -500,6 +541,15 @@ export const TransformationFlow = forwardRef<
                 onDelete={handleDelete}
                 onCancel={() => setEditingNodeId(null)}
                 confirmBeforeDelete={confirmBeforeDelete}
+              />
+            </div>
+          )}
+
+          {isReadOnly && configDisplayMode === "panel" && viewingNode && (
+            <div className="flex w-80 shrink-0 flex-col overflow-hidden border-l border-gray-200 bg-white">
+              <StageDetailsView
+                node={viewingNode}
+                onClose={() => setViewingNodeId(null)}
               />
             </div>
           )}

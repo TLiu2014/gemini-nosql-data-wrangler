@@ -64,9 +64,17 @@ function stripHeavyFieldsFromText(text: string): string {
  * server returns a `content` array of text entries: one or more narrative
  * lines ("The aggregation resulted in N documents.", warning preambles)
  * followed by either each document as its own text entry, or all
- * documents concatenated as a JSON array. We're permissive about both
- * shapes — anything that JSON-parses to an object or array contributes its
- * docs to the output; non-JSON text is skipped.
+ * documents concatenated as a JSON array.
+ *
+ * `mongodb-mcp-server` v3+ wraps the docs inside an
+ * `<untrusted-user-data-UUID>…</untrusted-user-data-UUID>` block with a
+ * long preamble warning the model not to follow embedded instructions. We
+ * unwrap that block first so the inner JSON can be parsed. Older versions
+ * (and other MCP-style servers) emit the JSON at the start of the entry
+ * with no wrapper — both shapes are handled.
+ *
+ * We're permissive: anything that JSON-parses to an object or array
+ * contributes its docs to the output; non-JSON text is skipped.
  */
 export function extractDocsFromMcpAggregate(raw: unknown): unknown[] {
   if (!raw || typeof raw !== "object") return [];
@@ -77,31 +85,55 @@ export function extractDocsFromMcpAggregate(raw: unknown): unknown[] {
     if (entry?.type !== "text" || typeof entry.text !== "string") continue;
     const text = entry.text.trim();
     if (!text) continue;
-    if (text[0] !== "{" && text[0] !== "[") continue;
 
-    // Fast path: the fragment is well-formed JSON.
-    try {
-      const parsed = JSON.parse(text);
-      if (Array.isArray(parsed)) {
-        docs.push(...parsed);
-      } else if (parsed && typeof parsed === "object") {
-        docs.push(parsed);
+    // Candidate JSON fragments to try parsing. By default we try the whole
+    // entry; if the entry is wrapped in <untrusted-user-data-UUID> tags
+    // (mongodb-mcp-server v3+) we also try the unwrapped inner content,
+    // which is where the actual JSON documents live.
+    const candidates: string[] = [];
+    const unwrapped = unwrapUntrustedData(text);
+    if (unwrapped) candidates.push(unwrapped);
+    candidates.push(text);
+
+    let parsed = false;
+    for (const candidate of candidates) {
+      const head = candidate[0];
+      if (head !== "{" && head !== "[") continue;
+      try {
+        const json = JSON.parse(candidate);
+        if (Array.isArray(json)) docs.push(...json);
+        else if (json && typeof json === "object") docs.push(json);
+        parsed = true;
+        break;
+      } catch {
+        /* try the next candidate, then fall through to recovery */
       }
-      continue;
-    } catch {
-      /* fall through to recovery */
     }
+    if (parsed) continue;
 
     // Recovery path: the fragment got truncated (byte budget hit, or the
-    // MCP server emitted a partial doc). Walk forward from each `{` and
-    // try parsing increasing substrings; any prefix that JSON-parses as
-    // a valid object contributes its docs. Cheap heuristic — we only
-    // attempt this when the whole-string parse fails.
+    // MCP server emitted a partial doc), or the entry contains JSON
+    // embedded in surrounding prose we don't recognize. Walk the entire
+    // text looking for balanced `{…}` objects; any that JSON-parse are
+    // collected.
     for (const slice of recoverJsonObjects(text)) {
       docs.push(slice);
     }
   }
   return docs;
+}
+
+/**
+ * Pull the inner content out of mongodb-mcp-server v3+'s
+ * `<untrusted-user-data-UUID>…</untrusted-user-data-UUID>` wrapper. Returns
+ * null when no wrapper is present, so the caller can fall back to parsing
+ * the raw entry verbatim.
+ */
+function unwrapUntrustedData(text: string): string | null {
+  const match = text.match(
+    /<untrusted-user-data-[^>]+>([\s\S]*?)<\/untrusted-user-data-[^>]+>/,
+  );
+  return match ? match[1].trim() : null;
 }
 
 /** Walk a possibly-truncated text and extract any well-formed top-level

@@ -197,6 +197,18 @@ wss.on("connection", (ws: WsWebSocket) => {
         });
         break;
       }
+      case "chat.reset": {
+        // Fresh chat, same connection: wipe the agent's memory + canvas so
+        // Gemini treats the next message as a new flow. No-op if the agent
+        // hasn't been built yet (no message sent this session).
+        if (agent) {
+          await agent.reset().catch((err) => {
+            console.error("[ws] agent.reset() failed:", err);
+          });
+        }
+        client.sendAgentStatus("idle");
+        break;
+      }
       case "mflix.refresh": {
         const database = msg.database ?? "sample_mflix";
         if (!mcp || !mcp.isConnected()) {
