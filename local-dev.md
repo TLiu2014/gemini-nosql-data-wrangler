@@ -1,4 +1,10 @@
-# Local development with MongoDB on localhost
+# Local development
+
+Notes for running and developing the project locally. Right now there's one
+topic — pointing the app at a **local MongoDB** instead of Atlas — but this is
+the home for any future local-dev guidance.
+
+## Local MongoDB on localhost
 
 By default the app talks to MongoDB Atlas. That's the right setup for production / for sharing the app with judges, but Atlas free-tier M0 sits behind a network round-trip that adds 200ms–2s per query — over a 3–5 step demo, the cumulative wait is noticeable.
 

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { NodeToolbar, Position, useReactFlow, type Node } from "@xyflow/react";
 
 import { StageDetailsView } from "@/components/config/StageDetailsView";
@@ -59,6 +59,19 @@ export function PopoverStageDetails({ node, onClose }: PopoverStageDetailsProps)
     const { zoom } = reactFlow.getViewport();
     reactFlow.setCenter(cx, cy, { zoom, duration: FOCUS_DURATION_MS });
   }, [nodeId, position, reactFlow]);
+
+  // Capture viewport at mount and restore on unmount so closing the popover
+  // puts the canvas back where it was before the open-time pan.
+  const savedViewportRef = useRef<{ x: number; y: number; zoom: number } | null>(null);
+  useEffect(() => {
+    if (savedViewportRef.current === null) {
+      savedViewportRef.current = reactFlow.getViewport();
+    }
+    return () => {
+      const v = savedViewportRef.current;
+      if (v) reactFlow.setViewport(v, { duration: FOCUS_DURATION_MS });
+    };
+  }, [reactFlow]);
 
   return (
     <NodeToolbar

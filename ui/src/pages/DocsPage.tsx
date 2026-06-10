@@ -8,6 +8,7 @@ import {
   Database,
   ExternalLink,
   Film,
+  Image as ImageIcon,
   Moon,
   Network,
   Server,
@@ -77,7 +78,7 @@ export default function DocsPage() {
         <Link to="/" className="flex items-center gap-2">
           <Sparkles className="h-5 w-5 text-violet-400" />
           <span className="text-sm font-semibold tracking-tight">
-            Gemini NoSQL Data Wrangler
+            AtlasOrbit
           </span>
         </Link>
         <div className="flex items-center gap-2">
@@ -143,41 +144,6 @@ export default function DocsPage() {
         </div>
       </section>
 
-      {/* Architecture mini-overview */}
-      <section id="architecture" className="mx-auto max-w-screen-2xl px-6 pb-16 scroll-mt-20">
-        <div
-          className={`text-xs font-semibold uppercase tracking-wider ${t.eyebrow}`}
-        >
-          How it fits together
-        </div>
-        <h2 className="mt-2 text-2xl font-bold tracking-tight sm:text-3xl">
-          One WebSocket. One agent. Two tool families.
-        </h2>
-        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
-          <ArchCard
-            t={t}
-            dark={dark}
-            icon={<Terminal className="h-5 w-5" />}
-            title="Client"
-            body="The browser holds a single long-lived WebSocket. It sends `user.text` / `user.audio` messages and receives `canvas.update`, `results`, and `trace` events that drive the UI."
-          />
-          <ArchCard
-            t={t}
-            dark={dark}
-            icon={<Sparkles className="h-5 w-5" />}
-            title="Agent (ADK + Gemini)"
-            body="An ADK `LlmAgent` runs the tool-call loop with Gemini as the model. Each user turn fans out into tool calls until the model stops asking for tools, then emits a final text reply."
-          />
-          <ArchCard
-            t={t}
-            dark={dark}
-            icon={<Database className="h-5 w-5" />}
-            title="MongoDB MCP"
-            body="A standard MCP server spawned per session, exposed to the agent via ADK's `MCPToolset`. Provides `aggregate`, `find`, `count`, `collection-schema`, `list-collections`, `list-databases`."
-          />
-        </div>
-      </section>
-
       {/* Two-column layout for the rest of the page: sticky table of
           contents on the left (desktop only), all content sections on the
           right. The TOC mirrors the section anchor ids — clicks scroll to
@@ -225,6 +191,61 @@ export default function DocsPage() {
           </aside>
 
           <div className="min-w-0">
+      {/* Architecture overview — lives inside the content column so it lines
+          up with the sticky TOC on the left (the TOC's first entry,
+          "Architecture › Overview", anchors here). */}
+      <section id="architecture" className="pb-16 scroll-mt-20">
+        <SectionHeading
+          t={t}
+          icon={<Network className="h-5 w-5" />}
+          eyebrow="Architecture"
+          title="One WebSocket. One agent. A ReAct loop."
+          body={
+            <>
+              The agent runs a{" "}
+              <strong className={t.cardTitle}>ReAct loop</strong>{" "}
+              (<em>Reason → Act → Observe</em>): for each user turn Gemini
+              reasons about what to do, calls a tool, observes the result, and
+              repeats until no more tools are needed — then it writes a final
+              reply. ADK&apos;s{" "}
+              <code className={`rounded ${t.codeInline} px-1`}>LlmAgent</code>{" "}
+              drives that loop; we never hand-roll the control flow. Two tool
+              families are in scope: four{" "}
+              <strong className={t.cardTitle}>custom tools</strong> that drive
+              the UI, and the{" "}
+              <strong className={t.cardTitle}>MongoDB MCP</strong> tools that
+              read the database.
+            </>
+          }
+        />
+
+        <ReActDiagram t={t} dark={dark} />
+
+        <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-3">
+          <ArchCard
+            t={t}
+            dark={dark}
+            icon={<Terminal className="h-5 w-5" />}
+            title="Client"
+            body="The browser holds a single long-lived WebSocket. It sends `user.text` / `user.audio` messages and receives `canvas.update`, `results`, and `trace` events that drive the UI."
+          />
+          <ArchCard
+            t={t}
+            dark={dark}
+            icon={<Sparkles className="h-5 w-5" />}
+            title="Agent (ADK + Gemini)"
+            body="An ADK `LlmAgent` runs the ReAct tool-call loop with Gemini as the model. Each user turn fans out into tool calls until the model stops asking for tools, then emits a final text reply."
+          />
+          <ArchCard
+            t={t}
+            dark={dark}
+            icon={<Database className="h-5 w-5" />}
+            title="MongoDB MCP"
+            body="A standard MCP server spawned per session, exposed to the agent via ADK's `MCPToolset`. The agent runs pipelines through the custom `run_pipeline` tool; MCP supplies grounding tools like `collection-schema`, `list-collections`, and `list-databases`."
+          />
+        </div>
+      </section>
+
       {/* Custom tools */}
       <section id="custom-tools" className="pb-16 scroll-mt-20">
         <SectionHeading
@@ -548,7 +569,17 @@ export default function DocsPage() {
           }
         />
 
-        <div className="mt-6 space-y-4">
+        <div className="mt-6">
+          <DocScreenshot
+            t={t}
+            dark={dark}
+            src="/screenshots/visual-trace-timeline.png"
+            alt="Full visual trace timeline"
+            caption="The chat panel mid-turn: a violet “Thinking…” pill, tool progress / result cards, the agent's reply bubble, and suggestion chips below it."
+          />
+        </div>
+
+        <div className="mt-8 space-y-4">
           <h3 className={`text-sm font-semibold ${t.cardTitle}`}>
             Lifecycle of one user turn
           </h3>
@@ -627,6 +658,30 @@ export default function DocsPage() {
             title="Suggestion chip"
             kind="suggested_prompts"
             body={`Short label + the full follow-up prompt. Clicking fills the composer (doesn't auto-send).`}
+          />
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+          <DocScreenshot
+            t={t}
+            dark={dark}
+            src="/screenshots/trace-progress-pill.png"
+            alt="Progress pill (tool_call_start)"
+            caption="A single in-progress tool call — spinner, tool name, truncated args."
+          />
+          <DocScreenshot
+            t={t}
+            dark={dark}
+            src="/screenshots/trace-result-card.png"
+            alt="Result card (tool_call_result)"
+            caption="An expanded result card — green ✓, tool name, duration in ms, response."
+          />
+          <DocScreenshot
+            t={t}
+            dark={dark}
+            src="/screenshots/trace-suggestion-chips.png"
+            alt="Suggestion chips (suggest_next_prompts)"
+            caption="2–3 follow-up chips rendered under the agent's reply."
           />
         </div>
 
@@ -724,7 +779,18 @@ export default function DocsPage() {
               <em>cluster ⋯ menu → Load Sample Dataset</em>) and the agent
               builds every pipeline against it. The collections below appear
               in the &ldquo;Mflix collections&rdquo; reference tab in the
-              app so users can browse what&apos;s available before asking.
+              app so users can browse what&apos;s available before asking. For
+              the canonical schema and field descriptions, see MongoDB&apos;s{" "}
+              <a
+                href="https://www.mongodb.com/docs/atlas/sample-data/sample-mflix/"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-violet-500 hover:underline"
+              >
+                official <code className="font-mono">sample_mflix</code> docs
+                <ExternalLink className="h-3 w-3" />
+              </a>
+              .
             </>
           }
         />
@@ -965,6 +1031,142 @@ function ArchCard({
         <p className={`mt-1.5 text-sm leading-relaxed ${t.cardBody}`}>{body}</p>
       </div>
     </div>
+  );
+}
+
+/**
+ * Dependency-free architecture diagram for the overview. Shows the
+ * request/response path (Browser ↔ ADK agent ↔ tools) and the ReAct cycle
+ * (Reason → Act → Observe) the agent runs each turn. Built with styled divs
+ * rather than pulling a Mermaid runtime into the SPA bundle.
+ */
+function ReActDiagram({ t, dark }: { t: ThemeTokens; dark: boolean }) {
+  const box =
+    "rounded-lg border px-4 py-3 text-center " +
+    (dark ? "border-slate-700 bg-slate-900/60" : "border-slate-200 bg-white");
+  const arrow = `shrink-0 ${t.muted}`;
+  const cycleBox =
+    "flex-1 rounded-lg border px-3 py-3 text-center " +
+    (dark
+      ? "border-violet-500/30 bg-violet-500/10"
+      : "border-violet-200 bg-violet-50");
+  return (
+    <div className={`mt-6 rounded-xl border p-5 ${t.card}`}>
+      {/* Request / response path */}
+      <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className={`flex-1 ${box}`}>
+          <div className={`text-sm font-semibold ${t.cardTitle}`}>Browser</div>
+          <div className={`mt-0.5 text-[11px] ${t.muted}`}>
+            React + React Flow canvas
+          </div>
+        </div>
+        <div className={`text-center text-[11px] font-mono ${arrow}`}>
+          <ArrowRight className="mx-auto hidden h-4 w-4 sm:block" />
+          <span className="block">WebSocket</span>
+        </div>
+        <div className={`flex-1 ${box}`}>
+          <div className={`text-sm font-semibold ${t.cardTitle}`}>
+            ADK <code className="font-mono">LlmAgent</code>
+          </div>
+          <div className={`mt-0.5 text-[11px] ${t.muted}`}>
+            Gemini 3 Flash · ReAct loop
+          </div>
+        </div>
+        <div className={`text-center text-[11px] font-mono ${arrow}`}>
+          <ArrowRight className="mx-auto hidden h-4 w-4 sm:block" />
+          <span className="block">tool calls</span>
+        </div>
+        <div className={`flex-1 ${box}`}>
+          <div className={`text-sm font-semibold ${t.cardTitle}`}>Tools</div>
+          <div className={`mt-0.5 text-[11px] ${t.muted}`}>
+            4 custom + MongoDB MCP
+          </div>
+        </div>
+      </div>
+
+      {/* ReAct cycle */}
+      <div
+        className={`mt-5 text-center text-[10px] font-semibold uppercase tracking-wider ${t.eyebrow}`}
+      >
+        Per-turn ReAct cycle
+      </div>
+      <div className="mt-2 flex items-center gap-2">
+        <div className={cycleBox}>
+          <div className={`text-sm font-semibold ${t.cardTitle}`}>Reason</div>
+          <div className={`mt-0.5 text-[11px] ${t.muted}`}>
+            Gemini plans the next step
+          </div>
+        </div>
+        <ArrowRight className={`h-4 w-4 ${arrow}`} />
+        <div className={cycleBox}>
+          <div className={`text-sm font-semibold ${t.cardTitle}`}>Act</div>
+          <div className={`mt-0.5 text-[11px] ${t.muted}`}>
+            Call a tool (e.g. <code className="font-mono">run_pipeline</code>)
+          </div>
+        </div>
+        <ArrowRight className={`h-4 w-4 ${arrow}`} />
+        <div className={cycleBox}>
+          <div className={`text-sm font-semibold ${t.cardTitle}`}>Observe</div>
+          <div className={`mt-0.5 text-[11px] ${t.muted}`}>
+            Feed the result back in
+          </div>
+        </div>
+      </div>
+      <p className={`mt-3 text-center text-[11px] ${t.muted}`}>
+        The loop repeats until no tool is requested, then the agent streams its
+        final <code className={`rounded ${t.codeInline} px-1`}>agent_text</code>{" "}
+        reply.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Screenshot slot for the docs. Renders the image if present; if the file is
+ * missing (e.g. not yet captured), `onError` swaps in a labeled dashed
+ * placeholder so the layout never shows a broken-image icon.
+ */
+function DocScreenshot({
+  t,
+  dark,
+  src,
+  alt,
+  caption,
+}: {
+  t: ThemeTokens;
+  dark: boolean;
+  src: string;
+  alt: string;
+  caption: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <figure className={`overflow-hidden rounded-lg border ${t.card}`}>
+      {failed ? (
+        <div
+          className={`flex min-h-[180px] flex-col items-center justify-center gap-2 border-b border-dashed px-6 py-10 text-center ${
+            dark ? "border-slate-700" : "border-slate-300"
+          }`}
+        >
+          <ImageIcon className={`h-6 w-6 ${t.muted}`} />
+          <div className={`text-sm font-medium ${t.cardTitle}`}>{alt}</div>
+          <code className={`rounded ${t.codeInline} px-1.5 py-0.5 text-[11px]`}>
+            {src}
+          </code>
+        </div>
+      ) : (
+        <img
+          src={src}
+          alt={alt}
+          loading="lazy"
+          onError={() => setFailed(true)}
+          className="block w-full"
+        />
+      )}
+      <figcaption className={`px-4 py-2 text-xs ${t.muted}`}>
+        {caption}
+      </figcaption>
+    </figure>
   );
 }
 

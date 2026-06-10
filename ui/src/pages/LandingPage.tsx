@@ -105,7 +105,7 @@ export default function LandingPage() {
         <div className="flex items-center gap-2">
           <Sparkles className="h-5 w-5 text-violet-400" />
           <span className="text-sm font-semibold tracking-tight">
-            Gemini NoSQL Data Wrangler
+            AtlasOrbit
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -149,7 +149,7 @@ export default function LandingPage() {
             Hackathon demo · 2026
           </div>
           <h1 className="text-5xl font-bold leading-[1.05] tracking-tight sm:text-6xl">
-            Gemini Data Wrangler.
+            AtlasOrbit.
           </h1>
           <p className={`mt-6 text-lg leading-relaxed sm:text-xl ${t.subtle}`}>
             Talk to your MongoDB database in plain English. Watch a{" "}

@@ -1,4 +1,7 @@
+import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer, type WebSocket as WsWebSocket } from "ws";
 
@@ -28,6 +31,33 @@ app.get("/health", (_req, res) => {
     mongoUriConfigured: !!env.MONGODB_URI,
   });
 });
+
+// Optional static UI serving — used by the single-Cloud-Run deployment where
+// the same service hosts both the UI and the WebSocket. The Dockerfile copies
+// the built UI into `<runtime>/public/`. In local dev there's no `public/`
+// dir, so this block is a no-op and the Vite dev server (`npm run dev:ui`)
+// proxies `/ws` + `/health` back to this process on :8080.
+const here = path.dirname(fileURLToPath(import.meta.url));
+const publicDir = process.env.STATIC_DIR ?? path.resolve(here, "../../public");
+if (fs.existsSync(path.join(publicDir, "index.html"))) {
+  app.use(express.static(publicDir, { index: false }));
+  // SPA fallback: any GET that didn't match /health or a real file falls
+  // through to here. Send index.html so client-side routing (React Router
+  // for /, /app, /docs) works. Skip requests that look like files
+  // (path.extname returns non-empty) — those should 404 if static didn't
+  // find them, not be replaced by the HTML shell.
+  app.use((req, res, next) => {
+    if (req.method !== "GET") return next();
+    if (req.path === "/ws" || req.path === "/health") return next();
+    if (path.extname(req.path)) return next();
+    res.sendFile(path.join(publicDir, "index.html"));
+  });
+  console.log(`[startup] serving UI static files from ${publicDir}`);
+} else {
+  console.log(
+    `[startup] no UI static files at ${publicDir} — running as API-only`,
+  );
+}
 
 const httpServer = http.createServer(app);
 const wss = new WebSocketServer({ noServer: true });

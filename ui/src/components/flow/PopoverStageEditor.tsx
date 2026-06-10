@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import {
   NodeToolbar,
   Position,
@@ -67,6 +67,21 @@ export function PopoverStageEditor({
     const { zoom } = reactFlow.getViewport();
     reactFlow.setCenter(cx, cy, { zoom, duration: FOCUS_DURATION_MS });
   }, [nodeId, position, reactFlow]);
+
+  // Capture the viewport at mount and restore it on unmount so closing the
+  // popover puts the canvas back where it was before we panned to make room.
+  // Keyed on reactFlow only (stable), so switching focused nodes mid-open
+  // doesn't overwrite the baseline.
+  const savedViewportRef = useRef<{ x: number; y: number; zoom: number } | null>(null);
+  useEffect(() => {
+    if (savedViewportRef.current === null) {
+      savedViewportRef.current = reactFlow.getViewport();
+    }
+    return () => {
+      const v = savedViewportRef.current;
+      if (v) reactFlow.setViewport(v, { duration: FOCUS_DURATION_MS });
+    };
+  }, [reactFlow]);
 
   return (
     <NodeToolbar

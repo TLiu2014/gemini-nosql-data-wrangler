@@ -90,7 +90,7 @@ export default function TopBar({
       <div className="flex items-center gap-2">
         <Sparkles className="h-5 w-5" />
         <span className="text-base font-semibold tracking-tight">
-          Gemini NoSQL Data Wrangler
+          AtlasOrbit
         </span>
       </div>
 
