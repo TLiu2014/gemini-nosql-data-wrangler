@@ -601,11 +601,13 @@ export class AgentLoop {
   }
 
   /**
-   * Internal wrapper around `mcp.callTool`. Does NOT emit trace events —
-   * the call happens inside `run_pipeline`'s server-side implementation,
-   * which is itself the user-visible tool. Emitting a synthetic
-   * `tool_call_start("aggregate")` here just made the trace timeline
-   * noisier without adding information the user could act on.
+   * Internal wrapper around `mcp.callTool` used by `run_pipeline`'s
+   * server-side $facet/prefix-aggregate machinery. Emits the same
+   * `tool_call_start` / `tool_call_result` trace events the ADK callbacks
+   * use for agent-driven tool calls, so the user sees the underlying
+   * MongoDB MCP `aggregate` (or other) calls in the timeline — labeled
+   * with the MCP tool's real name. The UI's `isMcpToolName` check picks
+   * the label up and renders the Mongo MCP badge.
    *
    * Server-side `console.log`s still record the call for debugging.
    *
@@ -621,15 +623,28 @@ export class AgentLoop {
   ): Promise<T> {
     const startedAt = Date.now();
     console.log(`[agent] (internal) → ${mcpToolName}`);
+    this.opts.client.sendTrace({
+      kind: "tool_call_start",
+      label: mcpToolName,
+      payload: args,
+    });
 
     let raw: unknown;
     try {
       raw = await this.opts.mcp.callTool(mcpToolName, args);
     } catch (err) {
       const message = String(err);
+      const durationMs = Date.now() - startedAt;
       console.warn(
-        `[agent] (internal) ← ${mcpToolName} threw in ${Date.now() - startedAt}ms: ${message}`,
+        `[agent] (internal) ← ${mcpToolName} threw in ${durationMs}ms: ${message}`,
       );
+      this.opts.client.sendTrace({
+        kind: "tool_call_result",
+        label: mcpToolName,
+        payload: { error: message },
+        isError: true,
+        durationMs,
+      });
       return parseFail(message);
     }
 
@@ -639,6 +654,13 @@ export class AgentLoop {
     console.log(
       `[agent] (internal) ← ${mcpToolName} ${isErr ? "ERROR" : "ok"} in ${durationMs}ms`,
     );
+    this.opts.client.sendTrace({
+      kind: "tool_call_result",
+      label: mcpToolName,
+      payload: cleaned,
+      isError: isErr,
+      durationMs,
+    });
 
     if (isErr) {
       const text = JSON.stringify(cleaned).slice(0, 200);

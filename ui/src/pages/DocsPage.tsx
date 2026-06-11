@@ -171,6 +171,9 @@ export default function DocsPage() {
                   <TocAnchor t={t} href="#tool-push_results">push_results</TocAnchor>
                   <TocAnchor t={t} href="#tool-suggest_next_prompts">suggest_next_prompts</TocAnchor>
                 </TocGroup>
+                <TocGroup t={t} label="Visual trace">
+                  <TocAnchor t={t} href="#visual-trace">Visual trace timeline</TocAnchor>
+                </TocGroup>
                 <TocGroup t={t} label="MongoDB MCP tools">
                   <TocAnchor t={t} href="#tool-aggregate">aggregate</TocAnchor>
                   <TocAnchor t={t} href="#tool-find">find</TocAnchor>
@@ -179,8 +182,7 @@ export default function DocsPage() {
                   <TocAnchor t={t} href="#tool-list-collections">list-collections</TocAnchor>
                   <TocAnchor t={t} href="#tool-list-databases">list-databases</TocAnchor>
                 </TocGroup>
-                <TocGroup t={t} label="Trace + events">
-                  <TocAnchor t={t} href="#visual-trace">Visual trace timeline</TocAnchor>
+                <TocGroup t={t} label="Wire protocol">
                   <TocAnchor t={t} href="#ws-events">WebSocket events</TocAnchor>
                 </TocGroup>
                 <TocGroup t={t} label="Dataset">
@@ -399,156 +401,16 @@ export default function DocsPage() {
         </div>
       </section>
 
-      {/* MCP tools */}
-      <section id="mcp-tools" className="pb-16 scroll-mt-20">
-        <SectionHeading
-          t={t}
-          icon={<Database className="h-5 w-5" />}
-          eyebrow="MongoDB MCP tools"
-          title="Standard MCP surface, exposed unchanged."
-          body={
-            <>
-              These tools come from{" "}
-              <code className={`rounded ${t.codeInline} px-1.5`}>
-                mongodb-mcp-server
-              </code>{" "}
-              and are exposed to the agent through ADK&apos;s{" "}
-              <code className={`rounded ${t.codeInline} px-1.5`}>MCPToolset</code>
-              {" "}— schemas are discovered + mapped automatically. The agent
-              prefers{" "}
-              <code className={`rounded ${t.codeInline} px-1.5`}>run_pipeline</code>{" "}
-              for canvas-driven flows;{" "}
-              <code className={`rounded ${t.codeInline} px-1.5`}>aggregate</code>{" "}
-              stays available for ad-hoc inspection.
-            </>
-          }
-        />
-        <div className="mt-8 space-y-6">
-          <ToolDoc
-            t={t}
-            name="aggregate"
-            kind="mcp"
-            description="Run a MongoDB aggregation pipeline and return the matching documents. Use this for ad-hoc one-off queries; for canvas pipelines use run_pipeline so all stage tabs populate."
-            params={[
-              { name: "database", type: "string", required: true, doc: "Database name." },
-              { name: "collection", type: "string", required: true, doc: "Collection name." },
-              { name: "pipeline", type: "object[]", required: true, doc: "Aggregation stages." },
-            ]}
-            example={`aggregate({
-  database: "sample_mflix",
-  collection: "movies",
-  pipeline: [
-    { $match: { directors: "Christopher Nolan" } },
-    { $project: { title: 1, year: 1, _id: 0 } },
-    { $limit: 5 }
-  ]
-})`}
-            response="MCP text content with the matching docs concatenated as JSON."
-          />
-
-          <ToolDoc
-            t={t}
-            name="find"
-            kind="mcp"
-            description="Query a single collection with a filter + optional projection / sort / limit."
-            params={[
-              { name: "database", type: "string", required: true, doc: "Database name." },
-              { name: "collection", type: "string", required: true, doc: "Collection name." },
-              { name: "filter", type: "object", required: false, doc: "Mongo query filter." },
-              { name: "projection", type: "object", required: false, doc: "Field-include map." },
-              { name: "sort", type: "object", required: false, doc: "Sort spec." },
-              { name: "limit", type: "number", required: false, doc: "Max docs to return." },
-            ]}
-            example={`find({
-  database: "sample_mflix",
-  collection: "movies",
-  filter: { year: { $gte: 2020 } },
-  projection: { title: 1, year: 1, "imdb.rating": 1, _id: 0 },
-  sort: { "imdb.rating": -1 },
-  limit: 10
-})`}
-          />
-
-          <ToolDoc
-            t={t}
-            name="count"
-            kind="mcp"
-            description="Count documents matching a filter (or the whole collection if no filter is supplied)."
-            params={[
-              { name: "database", type: "string", required: true, doc: "Database name." },
-              { name: "collection", type: "string", required: true, doc: "Collection name." },
-              { name: "filter", type: "object", required: false, doc: "Mongo query filter. Defaults to {}." },
-            ]}
-            example={`count({
-  database: "sample_mflix",
-  collection: "movies",
-  filter: { genres: "Western" }
-})`}
-            response={'Text like "Found 547 documents in the collection."'}
-          />
-
-          <ToolDoc
-            t={t}
-            name="collection-schema"
-            kind="mcp"
-            description="Infer the schema of a collection from a sample — useful before designing a pipeline against unfamiliar data."
-            params={[
-              { name: "database", type: "string", required: true, doc: "Database name." },
-              { name: "collection", type: "string", required: true, doc: "Collection name." },
-            ]}
-            example={`collection-schema({
-  database: "sample_mflix",
-  collection: "embedded_movies"
-})`}
-            response={'MCP text content describing inferred field types, e.g. "plot_embedding: binData (1536-dim), title: string, year: int…"'}
-          />
-
-          <ToolDoc
-            t={t}
-            name="list-collections"
-            kind="mcp"
-            description="Enumerate the collections in a database."
-            params={[
-              { name: "database", type: "string", required: true, doc: "Database name." },
-            ]}
-            example={`list-collections({ database: "sample_mflix" })`}
-          />
-
-          <ToolDoc
-            t={t}
-            name="list-databases"
-            kind="mcp"
-            description="Enumerate the databases on the Atlas cluster (excluding admin/local)."
-            params={[]}
-            example={`list-databases()`}
-          />
-        </div>
-
-        <p className={`mt-6 text-sm ${t.muted}`}>
-          For the full upstream tool list, see{" "}
-          <a
-            href="https://github.com/mongodb-js/mongodb-mcp-server"
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 text-violet-500 hover:underline"
-          >
-            mongodb-js/mongodb-mcp-server
-            <ExternalLink className="h-3 w-3" />
-          </a>
-          . We allow-list only the data-operation tools (no Atlas administration) so the Gemini function-declaration payload stays small.
-        </p>
-      </section>
-
       {/* Visual trace timeline — what the UI shows while the agent works.
-          Sits between the tool-reference sections (above) and the raw
-          WebSocket-event schema (below) so readers see the user-facing
-          rendering before the wire-format details. */}
+          Sits right after the Custom tools section so readers see the
+          user-facing rendering of those tools before the MongoDB MCP
+          reference below. */}
       <section id="visual-trace" className="pb-16 scroll-mt-20">
         <SectionHeading
           t={t}
           icon={<Terminal className="h-5 w-5" />}
           eyebrow="Visual trace timeline"
-          title="See exactly what the agent is doing, as it does it."
+          title="See exactly what the agent is doing."
           body={
             <>
               While the agent works, the chat panel renders a live trace of
@@ -575,7 +437,9 @@ export default function DocsPage() {
             dark={dark}
             src="/screenshots/visual-trace-timeline.png"
             alt="Full visual trace timeline"
-            caption="The chat panel mid-turn: a violet “Thinking…” pill, tool progress / result cards, the agent's reply bubble, and suggestion chips below it."
+            caption="The chat panel mid-turn: a violet “Thought for Xs” pill, tool progress / result cards, the agent's reply bubble, and suggestion chips below it."
+            frame="image"
+            align="left"
           />
         </div>
 
@@ -718,6 +582,146 @@ export default function DocsPage() {
           <code className={`rounded ${t.codeInline} px-1`}>agent_text</code>{" "}
           →{" "}
           <code className={`rounded ${t.codeInline} px-1`}>turn_complete</code>.
+        </p>
+      </section>
+
+      {/* MCP tools */}
+      <section id="mcp-tools" className="pb-16 scroll-mt-20">
+        <SectionHeading
+          t={t}
+          icon={<Database className="h-5 w-5" />}
+          eyebrow="MongoDB MCP tools"
+          title="Standard MCP surface, exposed unchanged."
+          body={
+            <>
+              These tools come from{" "}
+              <code className={`rounded ${t.codeInline} px-1.5`}>
+                mongodb-mcp-server
+              </code>{" "}
+              and are exposed to the agent through ADK&apos;s{" "}
+              <code className={`rounded ${t.codeInline} px-1.5`}>MCPToolset</code>
+              {" "}— schemas are discovered + mapped automatically. The agent
+              prefers{" "}
+              <code className={`rounded ${t.codeInline} px-1.5`}>run_pipeline</code>{" "}
+              for canvas-driven flows;{" "}
+              <code className={`rounded ${t.codeInline} px-1.5`}>aggregate</code>{" "}
+              stays available for ad-hoc inspection.
+            </>
+          }
+        />
+        <div className="mt-8 space-y-6">
+          <ToolDoc
+            t={t}
+            name="aggregate"
+            kind="mcp"
+            description="Run a MongoDB aggregation pipeline and return the matching documents. Use this for ad-hoc one-off queries; for canvas pipelines use run_pipeline so all stage tabs populate."
+            params={[
+              { name: "database", type: "string", required: true, doc: "Database name." },
+              { name: "collection", type: "string", required: true, doc: "Collection name." },
+              { name: "pipeline", type: "object[]", required: true, doc: "Aggregation stages." },
+            ]}
+            example={`aggregate({
+  database: "sample_mflix",
+  collection: "movies",
+  pipeline: [
+    { $match: { directors: "Christopher Nolan" } },
+    { $project: { title: 1, year: 1, _id: 0 } },
+    { $limit: 5 }
+  ]
+})`}
+            response="MCP text content with the matching docs concatenated as JSON."
+          />
+
+          <ToolDoc
+            t={t}
+            name="find"
+            kind="mcp"
+            description="Query a single collection with a filter + optional projection / sort / limit."
+            params={[
+              { name: "database", type: "string", required: true, doc: "Database name." },
+              { name: "collection", type: "string", required: true, doc: "Collection name." },
+              { name: "filter", type: "object", required: false, doc: "Mongo query filter." },
+              { name: "projection", type: "object", required: false, doc: "Field-include map." },
+              { name: "sort", type: "object", required: false, doc: "Sort spec." },
+              { name: "limit", type: "number", required: false, doc: "Max docs to return." },
+            ]}
+            example={`find({
+  database: "sample_mflix",
+  collection: "movies",
+  filter: { year: { $gte: 2020 } },
+  projection: { title: 1, year: 1, "imdb.rating": 1, _id: 0 },
+  sort: { "imdb.rating": -1 },
+  limit: 10
+})`}
+          />
+
+          <ToolDoc
+            t={t}
+            name="count"
+            kind="mcp"
+            description="Count documents matching a filter (or the whole collection if no filter is supplied)."
+            params={[
+              { name: "database", type: "string", required: true, doc: "Database name." },
+              { name: "collection", type: "string", required: true, doc: "Collection name." },
+              { name: "filter", type: "object", required: false, doc: "Mongo query filter. Defaults to {}." },
+            ]}
+            example={`count({
+  database: "sample_mflix",
+  collection: "movies",
+  filter: { genres: "Western" }
+})`}
+            response={'Text like "Found 547 documents in the collection."'}
+          />
+
+          <ToolDoc
+            t={t}
+            name="collection-schema"
+            kind="mcp"
+            description="Infer the schema of a collection from a sample — useful before designing a pipeline against unfamiliar data."
+            params={[
+              { name: "database", type: "string", required: true, doc: "Database name." },
+              { name: "collection", type: "string", required: true, doc: "Collection name." },
+            ]}
+            example={`collection-schema({
+  database: "sample_mflix",
+  collection: "embedded_movies"
+})`}
+            response={'MCP text content describing inferred field types, e.g. "plot_embedding: binData (1536-dim), title: string, year: int…"'}
+          />
+
+          <ToolDoc
+            t={t}
+            name="list-collections"
+            kind="mcp"
+            description="Enumerate the collections in a database."
+            params={[
+              { name: "database", type: "string", required: true, doc: "Database name." },
+            ]}
+            example={`list-collections({ database: "sample_mflix" })`}
+          />
+
+          <ToolDoc
+            t={t}
+            name="list-databases"
+            kind="mcp"
+            description="Enumerate the databases on the Atlas cluster (excluding admin/local)."
+            params={[]}
+            example={`list-databases()`}
+          />
+        </div>
+
+        <p className={`mt-6 text-sm ${t.muted}`}>
+          For the full upstream tool list, see{" "}
+          <a
+            href="https://github.com/mongodb-js/mongodb-mcp-server"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-violet-500 hover:underline"
+          >
+            mongodb-js/mongodb-mcp-server
+            <ExternalLink className="h-3 w-3" />
+          </a>
+          . We allow-list only the data-operation tools (no Atlas administration) so the Gemini function-declaration payload stays small.
         </p>
       </section>
 
@@ -1132,16 +1136,41 @@ function DocScreenshot({
   src,
   alt,
   caption,
+  // Where the bordered card chrome lives.
+  //   "figure" (default): box wraps the image AND the caption together,
+  //                       matching the small trace-pill grid's framing.
+  //   "image":            box wraps the image only; caption sits below
+  //                       the box, on the page background. Used for
+  //                       larger hero-style screenshots that want to
+  //                       flow with the prose.
+  frame = "figure",
+  // Horizontal alignment within the parent container. Default "center"
+  // matches the original `mx-auto` behavior used by the small grid;
+  // "left" is for hero-style images that hug the left margin.
+  align = "center",
 }: {
   t: ThemeTokens;
   dark: boolean;
   src: string;
   alt: string;
   caption: string;
+  frame?: "figure" | "image";
+  align?: "center" | "left";
 }) {
   const [failed, setFailed] = useState(false);
+  const figureBox = frame === "figure";
+  const figureClass = figureBox
+    ? `overflow-hidden rounded-lg border ${t.card}`
+    : "";
+  // `inline-block` makes the wrapper shrink-wrap the image so the border
+  // hugs the screenshot instead of stretching the full container width.
+  const imgWrapperClass = !figureBox
+    ? `inline-block overflow-hidden rounded-lg border ${t.card}`
+    : "";
+  const imgAlignClass = align === "left" ? "" : "mx-auto";
+  const captionClass = figureBox ? "px-4 py-2" : "pt-2";
   return (
-    <figure className={`overflow-hidden rounded-lg border ${t.card}`}>
+    <figure className={figureClass}>
       {failed ? (
         <div
           className={`flex min-h-[180px] flex-col items-center justify-center gap-2 border-b border-dashed px-6 py-10 text-center ${
@@ -1155,15 +1184,23 @@ function DocScreenshot({
           </code>
         </div>
       ) : (
-        <img
-          src={src}
-          alt={alt}
-          loading="lazy"
-          onError={() => setFailed(true)}
-          className="block w-full"
-        />
+        // The screenshots in `ui/public/screenshots/` are chat-panel
+        // captures at their natural ~370px width. `w-full` stretched them
+        // to ~2x on a wide docs page and blurred the text. `max-w-sm`
+        // (24rem ≈ 384px) caps the upscale to ~1.0x — sharp on every
+        // viewport while still shrinking responsively when the container
+        // is narrower than the natural width.
+        <div className={imgWrapperClass}>
+          <img
+            src={src}
+            alt={alt}
+            loading="lazy"
+            onError={() => setFailed(true)}
+            className={`block w-full max-w-sm ${imgAlignClass}`}
+          />
+        </div>
       )}
-      <figcaption className={`px-4 py-2 text-xs ${t.muted}`}>
+      <figcaption className={`text-xs ${t.muted} ${captionClass}`}>
         {caption}
       </figcaption>
     </figure>

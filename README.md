@@ -10,10 +10,10 @@ Submitted to the **Google Cloud Rapid Agent Hackathon**. Powered by
 **Gemini 3 Flash** + the **Google Agent Development Kit** + the **MongoDB MCP
 server**.
 
-**Live app:** <!-- TODO: paste Cloud Run URL --> `https://…run.app`
+**Live app:** <https://atlasorbit-1013253724354.us-central1.run.app>
 &nbsp;&nbsp;&nbsp;*(this URL is the landing page at `/`; from there, click **Launch app** to open the workspace at `/app`)*
 
-**Demo video (< 3 min):** <!-- TODO: paste YouTube/Vimeo link --> `https://…`
+**Demo video (< 3 min):** <https://youtu.be/lsHe72iTYF0>
 
 Two supporting pages beyond the workspace:
 - **`/`** — landing page (pitch, "Built with" tech-stack overview, screenshots, **Launch app** button)
@@ -109,8 +109,6 @@ Under the hood it combines three pieces:
 
 The same architecture is documented end-to-end on the app's **`/docs`** page
 (agent + every tool with example calls) and the home page (`/`).
-
-![placeholder for demo gif](docs/demo-placeholder.png)
 
 ---
 

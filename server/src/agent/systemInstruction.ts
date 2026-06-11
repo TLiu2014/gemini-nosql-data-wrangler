@@ -188,8 +188,9 @@ When you call \`update_canvas\`, the \`schema\` shape is: \`{ version: "1.0", pi
 
 Required tool sequence, in order, on the same turn:
   1. Speak briefly: "Sure, loading X."
-  2. \`update_canvas\` — pipeline with one \`MQL_SOURCE\` stage for X.
-  3. \`run_pipeline({ database, collection: "X", pipeline: [], stage_ids: ["stage_1"] })\` — with an empty pipeline and only the source stage id, this shows the first 20 docs of X in the Source tab.
+  2. \`list-collections({ database: "sample_mflix" })\` — quick grounding call so the user sees the discovery step in the trace and we confirm X exists in the cluster the session is connected to. Do this every load-or-show turn; the MCP call is fast (~50-200ms) and the visible trace card is part of the demo's "you can watch the agent work" story.
+  3. \`update_canvas\` — pipeline with one \`MQL_SOURCE\` stage for X.
+  4. \`run_pipeline({ database, collection: "X", pipeline: [], stage_ids: ["stage_1"] })\` — with an empty pipeline and only the source stage id, this shows the first 20 docs of X in the Source tab.
 
 That's it. \`run_pipeline\` handles all the result-pushing internally.
 
@@ -334,20 +335,20 @@ function mcpToolAffordances(names: string[]): string {
     .map((n) => `\`${n}\``)
     .join(
       ", ",
-    )}. These are GROUNDING tools only — use them solely when you genuinely don't know a database/collection name. **For the \`sample_mflix\` demo you already know the schema (see DATASET above), so you should almost never need to call them.** You do NOT have a \`find\`, \`count\`, or \`aggregate\` tool — \`run_pipeline\` is the only way to execute a pipeline, and it already shows per-stage previews, so never reach for a separate "preview" or "verify" call.
+    )}. These are GROUNDING tools — \`list-collections\` is part of the Load / Show flow above so the user sees the discovery step in the trace. You do NOT have a \`find\`, \`count\`, or \`aggregate\` tool — \`run_pipeline\` is the only way to execute a pipeline, and it already shows per-stage previews, so never reach for a separate "preview" or "verify" call.
 
 ### EFFICIENCY (load-bearing — keep turns fast)
 
-A healthy turn is **exactly two tool calls**: one \`update_canvas\`, then one \`run_pipeline\`${
+A healthy turn is **two or three tool calls**: \`list-collections\` (only on a Load / Show turn — see above), then \`update_canvas\`, then \`run_pipeline\`${
     names.length > 0 ? " (plus `suggest_next_prompts` if enabled)" : ""
   }. To keep turns fast:
 
 - Call \`update_canvas\` **at most once** per turn. Do not re-emit it with tweaks.
 - Call \`run_pipeline\` **at most once** per turn. It populates every stage tab in one round-trip — do not call it again "to check" a stage.
-- Do NOT call \`list-databases\`/\`list-collections\`/\`collection-schema\` to "confirm" \`sample_mflix\` data — you already know it.
+- Call \`list-collections\` **at most once** per turn, and ONLY as the first step of a Load / Show turn. Do NOT call \`list-databases\` or \`collection-schema\` for \`sample_mflix\` — you already know that schema.
 - Never call a grounding tool to preview rows; \`run_pipeline\`'s per-stage preview already shows them.
 
-If you catch yourself making a third tool call in a turn, stop — you almost certainly already have what you need.`;
+If you catch yourself making a fourth tool call in a turn (beyond the three above), stop — you almost certainly already have what you need.`;
 }
 
 function atlasUnavailableNotice(detail: string | undefined): string {

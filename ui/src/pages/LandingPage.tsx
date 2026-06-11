@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import {
   ArrowRight,
   Database,
-  ImageIcon,
+  Github,
   Moon,
   Network,
   Sparkles,
@@ -37,6 +37,25 @@ function loadInitialTheme(): Theme {
  */
 export default function LandingPage() {
   const [theme, setTheme] = useState<Theme>(loadInitialTheme);
+
+  // Lightbox state for the canvas-flow screenshot. Click the tile to open
+  // the image at full resolution over a dimmed backdrop; click anywhere
+  // on the overlay (or press Esc) to close. We lock body scroll while
+  // open so the page underneath doesn't scroll behind the modal.
+  const [zoomed, setZoomed] = useState(false);
+  useEffect(() => {
+    if (!zoomed) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setZoomed(false);
+    };
+    window.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [zoomed]);
 
   useEffect(() => {
     try {
@@ -122,6 +141,19 @@ export default function LandingPage() {
               <Moon className="h-4 w-4" />
             )}
           </button>
+          {/* GitHub repo link — open-source signal. Icon-only to match
+              the theme toggle's footprint; external link opens in a new
+              tab so the visitor doesn't lose the landing page. */}
+          <a
+            href="https://github.com/TLiu2014/gemini-nosql-data-wrangler"
+            target="_blank"
+            rel="noreferrer"
+            title="View the source on GitHub"
+            aria-label="View the source on GitHub"
+            className={`inline-flex h-9 w-9 items-center justify-center rounded-md border transition-colors ${t.button}`}
+          >
+            <Github className="h-4 w-4" />
+          </a>
           <Link
             to="/docs"
             className={`hidden rounded-md border px-3 py-1.5 text-sm font-medium transition-colors sm:inline-flex ${t.button}`}
@@ -169,67 +201,20 @@ export default function LandingPage() {
               <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
             </Link>
             <a
-              href="#stack"
+              href="#demo-video"
               className={`inline-flex items-center justify-center rounded-md border px-6 py-3 text-base font-medium transition-colors ${t.button}`}
             >
-              See how it works
+              Watch the demo
             </a>
           </div>
         </div>
       </section>
 
-      {/* Visual proof — transform-flow screenshot above, demo video below.
-          Stacked (not side-by-side) so each gets the full content width: the
-          screenshot needs room for stage labels to be legible, and a wider
-          video frame is easier to follow. Both placeholders for now; drop a
-          real screenshot + recording in `docs/screenshots/` later. */}
-      <section className="mx-auto max-w-6xl space-y-6 px-6 pb-24">
-        {/* Screenshot — TODO: drop `docs/screenshots/canvas-flow.png` in and
-            swap the placeholder for an <img> tag. Suggested capture: workspace
-            mid-Demo 2, $lookup branching into two parallel paths, results
-            panel showing per-stage tabs. */}
-        <div
-          className={`overflow-hidden rounded-xl border shadow-2xl ${t.videoBox} ${dark ? "shadow-black/40" : "shadow-slate-200/60"}`}
-        >
-          <div className="aspect-video w-full">
-            <div
-              className={`flex h-full w-full flex-col items-center justify-center ${t.videoSurface} ${t.videoCopy}`}
-            >
-              <div className={`rounded-full border p-4 ${t.videoIcon}`}>
-                <ImageIcon className="h-8 w-8" />
-              </div>
-              <p className="mt-4 text-sm">Transform-flow screenshot</p>
-              <p className="text-xs italic">(coming soon)</p>
-            </div>
-          </div>
-        </div>
-        {/* Demo video placeholder. */}
-        <div
-          className={`overflow-hidden rounded-xl border shadow-2xl ${t.videoBox} ${dark ? "shadow-black/40" : "shadow-slate-200/60"}`}
-        >
-          <div className="aspect-video w-full">
-            <div
-              className={`flex h-full w-full flex-col items-center justify-center ${t.videoSurface} ${t.videoCopy}`}
-            >
-              <div className={`rounded-full border p-4 ${t.videoIcon}`}>
-                <svg
-                  className="h-8 w-8"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <polygon points="6 4 20 12 6 20 6 4" />
-                </svg>
-              </div>
-              <p className="mt-4 text-sm">Demo video</p>
-              <p className="text-xs italic">(coming soon)</p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Tech stack */}
+      {/* Tech stack — promoted up to right after the hero. The hero
+          answers "what is this"; the three stack cards immediately answer
+          "what's it made of" before the visitor commits to scrolling
+          through the tall visual-proof block below. The hero's "Watch the
+          demo" CTA jumps past this section to `#demo-video`. */}
       <section id="stack" className="mx-auto max-w-6xl px-6 pb-24">
         <div className="mb-10 max-w-2xl">
           <div className={`text-xs font-semibold uppercase tracking-wider ${t.eyebrow}`}>
@@ -268,6 +253,94 @@ export default function LandingPage() {
         </div>
       </section>
 
+      {/* Visual proof — the published demo video first (motion + narration
+          is the strongest hook), then the canvas screenshot below it as a
+          static "study the structure" follow-up. Each block carries its
+          own anchor id (`#demo-video`, `#canvas-screenshot`) so the hero
+          CTA and TOC-style links can deep-link straight to either tile.
+          Stacked vertically so each gets the full content width: the
+          video frame is easier to follow wide, and the screenshot needs
+          room for stage labels to be legible. */}
+      <section className="mx-auto max-w-6xl space-y-12 px-6 pb-24">
+        {/* Demo video block — title + subtitle above, YouTube embed below.
+            `scroll-mt-20` keeps the heading clear of the sticky header
+            when the hero's "Watch the demo" CTA jumps to this anchor. We
+            use the `youtube-nocookie.com` privacy-enhanced embed host so
+            no YouTube tracking cookies are set until the visitor presses
+            play. `loading="lazy"` defers the iframe load so the rest of
+            the landing page renders without waiting on YouTube. */}
+        <div id="demo-video" className="scroll-mt-20">
+          <div className="mb-5 max-w-2xl">
+            <div className={`text-xs font-semibold uppercase tracking-wider ${t.eyebrow}`}>
+              Watch it
+            </div>
+            <h2 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">
+              Watch the agent in action.
+            </h2>
+            <p className={`mt-3 ${t.muted}`}>
+              A short walkthrough: a plain-English request turns into a
+              running MongoDB aggregation pipeline on the canvas, stage by
+              stage, with the agent's reasoning visible the whole way.
+            </p>
+          </div>
+          <div
+            className={`overflow-hidden rounded-xl border shadow-2xl ${t.videoBox} ${dark ? "shadow-black/40" : "shadow-slate-200/60"}`}
+          >
+            <div className="aspect-video w-full">
+              <iframe
+                src="https://www.youtube-nocookie.com/embed/lsHe72iTYF0"
+                title="AtlasOrbit demo — agent builds a MongoDB aggregation pipeline"
+                loading="lazy"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                allowFullScreen
+                className="h-full w-full border-0"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Canvas screenshot block — captured mid-Demo 2 with the $lookup
+            branching into two parallel paths and the results panel
+            showing per-stage tabs. Source asset lives at
+            `ui/public/screenshots/canvas-flow.png` and is served by Vite.
+            The image is nearly square (2170×2368) — at full max-w-6xl
+            container width it renders ~1250px tall, which dominates the
+            page. We cap the image at `max-h-[80vh]` and let the width
+            follow natural aspect (`w-auto`), centered inside a tighter
+            `max-w-3xl` card so the visible frame hugs the rendered image
+            instead of leaving a wide empty background on the sides.
+            Click to open the lightbox at native resolution. */}
+        <div id="canvas-screenshot" className="scroll-mt-20">
+          <div className="mb-5 max-w-2xl">
+            <div className={`text-xs font-semibold uppercase tracking-wider ${t.eyebrow}`}>
+              Look inside
+            </div>
+            <h2 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">
+              A pipeline, mid-build.
+            </h2>
+            <p className={`mt-3 ${t.muted}`}>
+              The agent's live trace timeline on the left, the branching
+              DAG it just drew in the middle, and the per-stage result
+              tabs below — all from one MongoDB round-trip. Click for the
+              full-resolution view.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setZoomed(true)}
+            aria-label="View the workspace screenshot at full resolution"
+            className={`group mx-auto block max-w-3xl cursor-zoom-in overflow-hidden rounded-xl border shadow-2xl transition-transform hover:scale-[1.005] ${t.videoBox} ${dark ? "shadow-black/40" : "shadow-slate-200/60"}`}
+          >
+            <img
+              src="/screenshots/canvas-flow.png"
+              alt="AtlasOrbit workspace mid-demo: the agent has built a branching MongoDB aggregation pipeline on the canvas, with per-stage result tabs filled in below."
+              loading="lazy"
+              className="mx-auto block max-h-[80vh] w-auto"
+            />
+          </button>
+        </div>
+      </section>
+
       {/* Footer CTA */}
       <section className="mx-auto max-w-6xl px-6 pb-24">
         <div className={`rounded-xl border px-8 py-12 text-center ${t.footerBox}`}>
@@ -291,6 +364,45 @@ export default function LandingPage() {
       <footer className={`mx-auto max-w-6xl px-6 pb-10 text-center text-xs ${t.footerText}`}>
         Built by Tianwei Liu for the Google Cloud Rapid Agent Hackathon, 2026. Open source.
       </footer>
+
+      {/* Lightbox overlay for the workspace screenshot. Mounted only when
+          `zoomed` is true so it's removed from the DOM entirely between
+          uses (no offscreen mask, no event listeners). Click anywhere on
+          the backdrop (or the image — cursor-zoom-out everywhere) to
+          close; Esc handled by the effect above. */}
+      {zoomed && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Workspace screenshot at full resolution"
+          onClick={() => setZoomed(false)}
+          className="fixed inset-0 z-50 flex cursor-zoom-out items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+        >
+          <img
+            src="/screenshots/canvas-flow.png"
+            alt="AtlasOrbit workspace at full resolution"
+            className="block max-h-[95vh] max-w-[95vw] object-contain"
+          />
+          <button
+            type="button"
+            onClick={() => setZoomed(false)}
+            aria-label="Close zoomed image"
+            className="absolute right-4 top-4 inline-flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
+          >
+            <svg
+              className="h-5 w-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
     </div>
   );
 }

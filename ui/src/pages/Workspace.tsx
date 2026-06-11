@@ -977,11 +977,12 @@ export default function Workspace() {
 
   /**
    * Snapshot the canvas as a PNG download. Uses `html-to-image`'s `toPng`
-   * against the `.react-flow` element — captures the diagram (nodes,
-   * edges, background grid) and excludes the floating Share/Export
-   * toolbar (it's a sibling, not a child) plus React Flow's own controls
-   * + minimap (filtered out via `filter` so the screenshot is just the
-   * diagram). Saved as `<pipeline-name>.png`.
+   * against the `.react-flow` element — captures the diagram (nodes +
+   * edges) and excludes the floating Share/Export toolbar (it's a sibling,
+   * not a child), React Flow's own controls + minimap + attribution, and
+   * the dotted Background pattern (the dots only exist to anchor the
+   * canvas visually while editing — they look like grime in an exported
+   * image). Saved as `<pipeline-name>.png`.
    */
   const [imageExportPending, setImageExportPending] = useState(false);
   const handleExportImage = useCallback(async () => {
@@ -996,11 +997,16 @@ export default function Workspace() {
         pixelRatio: 2,
         cacheBust: true,
         filter: (node) => {
-          if (!(node instanceof HTMLElement)) return true;
-          // Skip React Flow's chrome — keep just the diagram itself.
-          if (node.classList.contains("react-flow__controls")) return false;
-          if (node.classList.contains("react-flow__minimap")) return false;
-          if (node.classList.contains("react-flow__attribution")) return false;
+          // Skip React Flow chrome (controls/minimap/attribution) and the
+          // dotted background pattern. The background is an <svg>, not an
+          // HTMLElement — checking both branches catches it either way.
+          const cls =
+            node instanceof Element ? node.classList : undefined;
+          if (!cls) return true;
+          if (cls.contains("react-flow__controls")) return false;
+          if (cls.contains("react-flow__minimap")) return false;
+          if (cls.contains("react-flow__attribution")) return false;
+          if (cls.contains("react-flow__background")) return false;
           return true;
         },
       });
